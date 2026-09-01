@@ -84,6 +84,7 @@ def run_on_terminal(command: list[str]) -> subprocess.CompletedProcess[str]:
 class FzfResult:
     key: str
     rows: list[str]
+    query: str = ""
 
 
 def run_fzf(
@@ -95,6 +96,7 @@ def run_fzf(
     expect: tuple[str, ...] = ("enter", "right", "left"),
     no_sort: bool = False,
     query: Optional[str] = None,
+    accept_query: bool = False,
 ) -> Optional[FzfResult]:
     executable = shutil.which("fzf")
     if executable is None:
@@ -117,6 +119,8 @@ def run_fzf(
     ]
     if expect:
         command.append("--expect=" + ",".join(expect))
+    if accept_query:
+        command.extend(["--print-query", "--bind=enter:accept"])
     if multi:
         command.extend(["--multi", "--bind=tab:toggle+down,btab:toggle+up"])
     else:
@@ -140,21 +144,22 @@ def run_fzf(
             check=False,
         )
 
-    if process.returncode in (1, 130) or not process.stdout:
+    if process.returncode == 130 or not process.stdout:
         return None
-    if process.returncode != 0:
+    if process.returncode not in ((0, 1) if accept_query else (0,)):
         raise FzfError(f"fzf exited with status {process.returncode}")
 
     output = process.stdout.splitlines()
+    typed_query = output.pop(0) if accept_query and output else ""
     if expect:
         key = output[0] if output else ""
         selected = output[1:]
     else:
         key = "enter"
         selected = output
-    if not selected:
+    if not selected and not (accept_query and typed_query):
         return None
-    return FzfResult(key=key or "enter", rows=selected)
+    return FzfResult(key=key or "enter", rows=selected, query=typed_query)
 
 
 def prompt_text(

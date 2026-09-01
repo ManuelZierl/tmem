@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tmem.db import TmemDB
+from tmem.terminal_ui import FzfResult
 from tmem.tui import ItemRef, TmemUI
 
 
@@ -46,6 +47,22 @@ class TuiLogicTests(unittest.TestCase):
                 self.assertIsNotNone(execution)
                 self.assertEqual(execution.script, "false\necho still-runs")
                 self.assertEqual(execution.display, execution.script)
+
+    def test_unmatched_parameter_query_is_used_and_remembered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with TmemDB(Path(directory) / "tmem.db") as db:
+                memory = db.create_memory(
+                    "tmux-start",
+                    ["tmux a -t {{session}}"],
+                    defaults={"session": "qaiva"},
+                )
+                result = FzfResult(key="enter", rows=[], query="llmops")
+                with patch("tmem.tui.run_fzf", return_value=result):
+                    execution = TmemUI(db).resolve_memory(memory)
+                self.assertIsNotNone(execution)
+                assert execution is not None
+                self.assertEqual(execution.script, "tmux a -t llmops")
+                self.assertEqual(db.parameter_values(memory.id, "session"), ["llmops"])
 
     def test_memory_actions_use_fresh_state_after_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

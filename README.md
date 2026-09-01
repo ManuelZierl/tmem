@@ -225,6 +225,11 @@ tmem run cluster-logs deployment/worker staging
 tmem run cluster-logs workload=deployment/worker namespace=staging
 ```
 
+In the parameter choice screen, type to filter saved values. If the text does
+not match a saved value, pressing Enter uses the typed text as a new value and
+remembers it. During parameter creation, press `Tab` on every token to mark all
+parameters, then press Enter to continue.
+
 Positional values bind to placeholders in template order, so a memory containing `cat {{file}}` can be run as `tmem catfile README.md`. Named `parameter=value` arguments remain useful when skipping or reordering parameters; positional and named values can be mixed.
 
 Parameter values are shell-quoted during rendering. The interactive parameterizer intentionally replaces complete shell tokens, which avoids accidental quoting errors.

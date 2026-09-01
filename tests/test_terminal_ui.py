@@ -104,6 +104,37 @@ class TerminalUiTests(unittest.TestCase):
             if child.isalive():
                 child.terminate(force=True)
 
+    @unittest.skipIf(pexpect is None or shutil.which("fzf") is None, "requires fzf and pexpect")
+    def test_unmatched_query_is_returned_as_input(self) -> None:
+        repository = Path(__file__).parents[1]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(repository / "src")
+        environment["TERM"] = "xterm-256color"
+        code = (
+            "from tmem.terminal_ui import run_fzf; "
+            "result = run_fzf(["
+            "'v:qaiva\\tDefault: qaiva', "
+            "'new:\\tEnter a new value…'"
+            "], header='Parameter', expect=(), accept_query=True); "
+            "print('__QUERY__' + (result.query if result else 'CANCELLED'))"
+        )
+        child = pexpect.spawn(
+            sys.executable,
+            ["-c", code],
+            env=environment,
+            encoding="utf-8",
+            timeout=8,
+        )
+        try:
+            child.expect("Default: qaiva")
+            child.send("llmops")
+            child.send("\r")
+            child.expect("__QUERY__llmops")
+            child.expect(pexpect.EOF)
+        finally:
+            if child.isalive():
+                child.terminate(force=True)
+
 
 if __name__ == "__main__":
     unittest.main()

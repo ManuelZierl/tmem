@@ -550,14 +550,20 @@ class TmemUI:
             rows.append("new:\tEnter a new value…")
             result = run_fzf(
                 rows,
-                header=f"{memory_name} — parameter: {name}\nEnter choose  ·  Esc cancel",
+                header=(
+                    f"{memory_name} — parameter: {name}\n"
+                    "Enter choose or use unmatched text  ·  Esc cancel"
+                ),
                 prompt=f"{name}> ",
                 multi=False,
-                expect=("enter",),
+                expect=(),
                 no_sort=True,
+                accept_query=True,
             )
             if result is None:
                 return None
+            if not result.rows:
+                return result.query
             hidden = result.rows[0].split("\t", 1)[0]
             if hidden.startswith("v:"):
                 return decode_hidden(hidden[2:])
