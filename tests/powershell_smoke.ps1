@@ -23,7 +23,8 @@ Assert ($tmemLiteral -ceq $value) 'literal quoting or native argument forwarding
 
 foreach ($line in @('tmem save should-not-run -- echo x', 'tmem run state; Write-Output bad',
                     'tmem run state | Write-Output', 'tmem run state > output.txt', 'tmem run state &',
-                    '. tmem run state', 'param($x) tmem run state')) {
+                    '. tmem run state', 'param($x) tmem run state',
+                    'tmem export', 'tmem import memories.json')) {
     Assert ($null -eq (_tmem_expand_line $line)) "unsafe eager expansion: $line"
 }
 
@@ -58,13 +59,23 @@ Assert (!(Get-Variable tmemAfter -ErrorAction Ignore)) 'explicit fallback contin
 
 # Explicit recording exercises UTF-8 stdin, metadata, pause and code preservation.
 $global:LASTEXITCODE = 7
-$global:_TmemPending = [pscustomobject]@{Command='Write-Output recorded';Cwd=(Get-Location).ProviderPath;Started=1;MemoryId=$null}
+$global:_TmemPending = [pscustomobject]@{Command='Write-Output recorded €東京';Cwd=(Get-Location).ProviderPath;Started=1;MemoryId=$null}
 _tmem_record_pending -Succeeded $false -NativeCode 7
 Assert ($LASTEXITCODE -eq 7) 'recording changed LASTEXITCODE'
 tmem pause
 $global:_TmemPending = [pscustomobject]@{Command='Write-Output private';Cwd=(Get-Location).ProviderPath;Started=1;MemoryId=$null}
 _tmem_record_pending -Succeeded $true -NativeCode 0
 tmem resume
+
+# Transfer verbs must be management operations, not names to execute. This
+# exercises both PowerShell functions and the production Python entry point.
+$exported = tmem export
+Assert ($global:_TmemCoreStatus -eq 0) 'export failed'
+$document = $exported | ConvertFrom-Json
+Assert ($document.format -eq 'tmem-memories') 'export did not return memory JSON'
+Assert ($document.memories.Count -eq 3) 'export omitted memories'
+$exported | tmem import - --on-conflict skip | Out-Null
+Assert ($global:_TmemCoreStatus -eq 0) 'piped import failed'
 
 $failed = $false
 try { tmem run state } catch { $failed = $true }

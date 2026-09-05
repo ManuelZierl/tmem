@@ -56,7 +56,14 @@ try {
     $env:PYTHONPATH = __APP__
     if (!$env:TMEM_CONFIG_DIR) { $env:TMEM_CONFIG_DIR = __CONFIG__ }
     $env:PYTHONUTF8 = '1'
-    & __PYTHON__ -m tmem @args
+    $OutputEncoding = [Text.UTF8Encoding]::new($false)
+    # PowerShell script wrappers receive pipeline objects in $input; they do
+    # not automatically forward those objects to a child native executable.
+    if ($MyInvocation.ExpectingInput) {
+        $input | & __PYTHON__ -m tmem @args
+    } else {
+        & __PYTHON__ -m tmem @args
+    }
 } finally {
     $env:PYTHONPATH = $oldPath
     $env:TMEM_CONFIG_DIR = $oldConfig

@@ -265,6 +265,10 @@ def _import(argv: Sequence[str]) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
+        # Transfer verbs return before cli.main: configure their pipes too.
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure") and not stream.isatty():
+                stream.reconfigure(encoding="utf-8")
         # Shell adapters probe unknown first words as potential memory names.
         # Keep transfer verbs reserved so a memory called "export" or "import"
         # cannot shadow these management commands.

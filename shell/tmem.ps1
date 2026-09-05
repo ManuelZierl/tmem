@@ -74,8 +74,12 @@ function global:tmem {
             }
             'help' { _tmem_core -Arguments @('--help'); return }
         }
-        if ($tmemArguments[0] -in @('search','failed','today','cwd','list','show','edit','rm','remove','save','group','stats','import-history','doctor','init','--help','-h','--version')) {
-            _tmem_core -Arguments $tmemArguments
+        if ($tmemArguments[0] -in @('search','failed','today','cwd','list','show','edit','rm','remove','save','group','stats','export','import','import-history','doctor','init','--help','-h','--version')) {
+            if ($MyInvocation.ExpectingInput) {
+                _tmem_core -Arguments $tmemArguments -InputText ($input | Out-String)
+            } else {
+                _tmem_core -Arguments $tmemArguments
+            }
             return
         }
     }
@@ -108,7 +112,7 @@ function global:_tmem_expand_line {
     if ($command.CommandElements.Count -gt 1) {
         # Management commands execute normally, not while the line is edited.
         $verb = $command.CommandElements[1].Extent.Text.Trim("'", '"')
-        if ($verb -in @('pause','resume','status','help','search','failed','today','cwd','list','show','edit','rm','remove','save','group','stats','import-history','doctor','init','--help','-h','--version')) { return $null }
+        if ($verb -in @('pause','resume','status','help','search','failed','today','cwd','list','show','edit','rm','remove','save','group','stats','export','import','import-history','doctor','init','--help','-h','--version')) { return $null }
     }
     # ParseInput restricted this to one command (no pipelines/chains/redirection).
     # Only its arguments are evaluated, once, exactly as the user entered them.
@@ -132,6 +136,9 @@ function global:_tmem_record_pending {
             _tmem_core -Arguments @('record', '--cwd', $pending.Cwd, '--exit-code', "$exitCode",
                 '--started-at-ms', "$($pending.Started)", '--shell', 'powershell',
                 '--session', $env:TMEM_SESSION_ID) -InputText $pending.Command | Out-Null
+            if ($global:_TmemCoreStatus -ne 0) {
+                throw "tmem-core record exited with status $global:_TmemCoreStatus"
+            }
         }
         if ($pending.MemoryId) { _tmem_core -Arguments @('note-run', "$($pending.MemoryId)") | Out-Null }
     } catch { Write-Warning "tmem could not record this command: $_" }

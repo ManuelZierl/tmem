@@ -142,7 +142,14 @@ class PortabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="tmem O'Brien ") as directory:
             env = environment(directory)
             core = Path(directory) / 'core.ps1'
-            core.write_text('& $env:TMEM_TEST_PYTHON -m tmem @args\n', encoding='utf-8')
+            # Exercise the production wrapper, including its stdin forwarding,
+            # rather than a fake wrapper with different pipeline semantics.
+            template = (ROOT / 'install.ps1').read_text(encoding='utf-8')
+            launcher = template.split("$launcher = @'\n", 1)[1].split("\n'@", 1)[0]
+            launcher = launcher.replace('__APP__', quote_argument(str(ROOT / 'src'), 'powershell'))
+            launcher = launcher.replace('__CONFIG__', quote_argument(directory, 'powershell'))
+            launcher = launcher.replace('__PYTHON__', quote_argument(sys.executable, 'powershell'))
+            core.write_text(launcher, encoding='utf-8')
             env['TMEM_CORE'] = str(core)
             result = subprocess.run([PW, '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'tests/powershell_smoke.ps1')],
                                     env=env, text=True, encoding='utf-8', capture_output=True, timeout=90)
@@ -173,6 +180,14 @@ class PortabilityTests(unittest.TestCase):
                                     env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('PSConsoleHostReadLine', result.stdout)
+            # A successful `init` is not enough: recording must traverse the
+            # installed .ps1 launcher and deliver UTF-8 stdin to Python.
+            env['TMEM_CORE'] = str(home / 'bin/tmem-core.ps1')
+            result = subprocess.run([PW, '-NoProfile', '-NonInteractive', '-File', str(ROOT / 'tests/powershell_smoke.ps1')],
+                                    env=env, capture_output=True, text=True, encoding='utf-8', timeout=90)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            with TmemDB(home / 'history.db') as db:
+                self.assertEqual(db.history_count(), 1, result.stdout + result.stderr)
             (home / 'history.db').write_bytes(b'keep history')
             (home / 'app/unrelated').write_text('keep unrelated')
             for _ in range(2):
