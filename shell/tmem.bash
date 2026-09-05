@@ -6,6 +6,7 @@ if [[ -n ${_TMEM_BASH_LOADED:-} ]]; then
 fi
 _TMEM_BASH_LOADED=1
 export TMEM_SHELL_INTEGRATION=1
+export TMEM_SHELL=bash
 
 : "${TMEM_SESSION_ID:=${HOSTNAME:-host}:$$:$(date +%s):${RANDOM}}"
 export TMEM_SESSION_ID
@@ -28,6 +29,23 @@ _tmem_core() {
     fi
 }
 
+_tmem_now_ms() {
+    # GNU date supports %N while BSD/macOS date may print it literally and
+    # still exit successfully. Validate the value instead of its exit status.
+    local value
+    value=$(date +%s%3N 2>/dev/null)
+    if [[ $value =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$value"
+    else
+        printf '%s000\n' "$(date +%s)"
+    fi
+}
+
+_tmem_decode() {
+    # `-d` is accepted by both GNU coreutils and BSD/macOS base64.
+    printf '%s' "$1" | base64 -d
+}
+
 _tmem_trim_history_command() {
     local value=$1
     # `fc -ln` adds indentation for display. Remove that indentation while
@@ -47,7 +65,7 @@ _tmem_preexec_capture() {
 
     _TMEM_READY=0
     _TMEM_PENDING_CWD=$PWD
-    _TMEM_PENDING_STARTED_MS=$(date +%s%3N 2>/dev/null || date +%s000)
+    _TMEM_PENDING_STARTED_MS=$(_tmem_now_ms)
 
     local current_histcmd=${HISTCMD:-0}
     local history_command=""
@@ -86,14 +104,17 @@ _tmem_precmd_start() {
     _TMEM_IN_PROMPT=1
     _TMEM_READY=0
 
-    # At prompt time Bash has finalized multiline history entries. Refresh the
-    # preexec value here so continuations are stored as one complete command.
-    if [[ ${HISTCMD:-0} -gt ${_TMEM_LAST_HISTCMD:-0} &&
-          ( -n ${_TMEM_PENDING_COMMAND:-} || ${TMEM_CAPTURE_MODE:-} == prompt-fallback ) ]]; then
+    # At prompt time Bash has finalized multiline history entries. Bash 3.2
+    # does not advance HISTCMD at the same point as newer Bash, so a captured
+    # pending command is itself enough reason to inspect finalized history.
+    if [[ -n ${_TMEM_PENDING_COMMAND:-} ||
+          ( ${TMEM_CAPTURE_MODE:-} == prompt-fallback && ${HISTCMD:-0} -gt ${_TMEM_LAST_HISTCMD:-0} ) ]]; then
         local fallback_command
         fallback_command=$(builtin fc -ln -1 2>/dev/null) || fallback_command=""
         fallback_command=$(_tmem_trim_history_command "$fallback_command")
-        if [[ -n $fallback_command ]]; then
+        if [[ -n $fallback_command &&
+              ( $fallback_command != "${_TMEM_LAST_HISTORY_COMMAND:-}" ||
+                $fallback_command == "${_TMEM_PENDING_COMMAND:-}" ) ]]; then
             if [[ -z ${_TMEM_PENDING_COMMAND:-} ||
                   $fallback_command == "$_TMEM_PENDING_COMMAND"* ]]; then
                 _TMEM_PENDING_COMMAND=$fallback_command
@@ -125,6 +146,8 @@ _tmem_precmd_start() {
 _tmem_precmd_end() {
     local prompt_status=$?
     _TMEM_LAST_HISTCMD=${HISTCMD:-$_TMEM_LAST_HISTCMD}
+    _TMEM_LAST_HISTORY_COMMAND=$(builtin fc -ln -1 2>/dev/null) || _TMEM_LAST_HISTORY_COMMAND=""
+    _TMEM_LAST_HISTORY_COMMAND=$(_tmem_trim_history_command "$_TMEM_LAST_HISTORY_COMMAND")
     _TMEM_IN_PROMPT=0
     _TMEM_READY=1
     return "$prompt_status"
@@ -243,8 +266,8 @@ _tmem_execute_payload() {
     fi
 
     local script display invocation
-    script=$(printf '%s' "$script_b64" | base64 --decode) || return 2
-    display=$(printf '%s' "$display_b64" | base64 --decode) || return 2
+    script=$(_tmem_decode "$script_b64") || return 2
+    display=$(_tmem_decode "$display_b64") || return 2
     invocation=${_TMEM_PENDING_COMMAND:-tmem}
 
     _tmem_remove_invocation_from_history
@@ -254,7 +277,7 @@ _tmem_execute_payload() {
     # The prompt hook records the real resolved command and its eventual status,
     # rather than the tmem invocation that led to it.
     _TMEM_PENDING_CWD=${_TMEM_PENDING_CWD:-$PWD}
-    _TMEM_PENDING_STARTED_MS=${_TMEM_PENDING_STARTED_MS:-$(date +%s%3N 2>/dev/null || date +%s000)}
+    _TMEM_PENDING_STARTED_MS=${_TMEM_PENDING_STARTED_MS:-$(_tmem_now_ms)}
     _TMEM_PENDING_COMMAND=$display
     _tmem_redraw_real_command "$display" "$invocation"
 
@@ -307,7 +330,7 @@ tmem() {
         help)
             _tmem_core --help
             ;;
-        search|failed|today|cwd|list|show|edit|rm|remove|save|group|stats|import-history|doctor|--help|-h|--version)
+        search|failed|today|cwd|list|show|edit|rm|remove|save|group|stats|import-history|doctor|init|--help|-h|--version)
             _tmem_core "$@"
             ;;
         *)
