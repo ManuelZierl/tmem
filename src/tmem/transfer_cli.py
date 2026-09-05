@@ -14,6 +14,7 @@ from .shells import SHELLS
 
 FORMAT = "tmem-memories"
 FORMAT_VERSION = 1
+TRANSFER_COMMANDS = {"export", "import"}
 
 
 def _memory_payload(db: TmemDB, memory: Memory) -> dict[str, Any]:
@@ -245,6 +246,11 @@ def _import(argv: Sequence[str]) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
+        # Shell adapters probe unknown first words as potential memory names.
+        # Keep transfer verbs reserved so a memory called "export" or "import"
+        # cannot shadow these management commands.
+        if len(arguments) == 2 and arguments[0] == "memory-exists" and arguments[1] in TRANSFER_COMMANDS:
+            return 1
         if arguments[:1] == ["export"]:
             return _export(arguments[1:])
         if arguments[:1] == ["import"]:
