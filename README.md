@@ -1,6 +1,8 @@
 # tmem
 
-`tmem` is persistent, fuzzy-searchable terminal command memory for Bash.
+`tmem` is persistent, fuzzy-searchable terminal command memory for Bash, zsh, and PowerShell.
+
+> **Portability:** Linux/Bash, macOS/zsh (plus Bash), and Windows/PowerShell 7.3+ use different shell integrations and have a few intentional semantic differences. Read [PORTABILITY.md](PORTABILITY.md) for the exact support contract, PowerShell fallback behavior, and cross-platform memory import/export guidance.
 
 > **Important:** `tmem` records complete shell commands and executes selected
 > commands in the current shell. Review the [privacy and security](#privacy-and-security)
@@ -14,7 +16,8 @@ It behaves like an expanded `Ctrl-R`:
 - **Right Arrow opens details and all available actions** for the selected item;
 - useful commands can be saved as named memories;
 - memories can contain parameters whose recent values are remembered;
-- multiple historical commands can be saved and run as an ordered command group.
+- multiple historical commands can be saved and run as an ordered command group;
+- saved memory definitions can be exported/imported as versioned JSON for backup or transfer between machines.
 
 A normal terminal session looks like this:
 
@@ -35,23 +38,22 @@ Selecting `docker compose logs worker` with Enter redraws the terminal as:
 $ docker compose logs worker
 ```
 
-The visible command and Bash history contain the resolved command—not `tmem`—and it executes in the calling shell.
+The visible command and shell history contain the resolved command—not `tmem`—and it executes in the calling shell.
 
 ## Requirements
 
-`tmem` 0.1 supports interactive Bash on Linux. Ubuntu is the tested platform;
-other Linux distributions may work but are not currently covered by CI.
+`tmem` targets interactive Bash on Linux, zsh on macOS (with Bash also supported), and PowerShell 7.3+ with PSReadLine on Windows. See [PORTABILITY.md](PORTABILITY.md) for the platform-specific behavior and limitations.
 
 - Python 3.10 or newer;
-- Bash and standard command-line utilities, including `base64`;
-- [`fzf`](https://github.com/junegunn/fzf) for the interactive interface.
+- [`fzf`](https://github.com/junegunn/fzf) for the interactive interface;
+- Bash/zsh standard command-line utilities on Unix, including `base64`, or PowerShell 7.3+ with PSReadLine on Windows.
 
 The Python runtime uses only the standard library. `tmem` does not require a
 server or network account.
 
 ## Quick start
 
-Install the dependencies on Ubuntu or Debian:
+Install dependencies on Ubuntu or Debian:
 
 ```bash
 sudo apt update
@@ -69,20 +71,20 @@ source ~/.config/tmem/tmem.bash
 tmem doctor
 ```
 
-The installer:
+On macOS, select zsh explicitly when installing. On Windows, use the PowerShell installer. Exact platform notes and acceptance status live in [PORTABILITY.md](PORTABILITY.md).
+
+The Unix installer:
 
 - copies the Python application to `~/.local/share/tmem/app`;
 - installs `tmem` and `tmem-core` under `~/.local/bin`;
-- installs the Bash integration at `~/.config/tmem/tmem.bash`;
-- adds one guarded `source` line to `~/.bashrc`.
+- installs the selected Bash/zsh integration under the tmem config directory;
+- adds one guarded source line to the corresponding shell profile.
 
-Installed files carry ownership markers. The installer refuses to overwrite an unrelated file at one of its target paths, and the uninstaller removes only files and Bash configuration recorded as tmem-owned.
+Installed files carry ownership markers. The installer refuses to overwrite an unrelated file at one of its target paths, and the uninstaller removes only files and shell configuration recorded as tmem-owned.
 
-The supported interactive installation path is `install.sh`. Installing the
-Python package alone provides `tmem-core` but does not install the required Bash
-integration.
+The supported interactive installation paths are the platform installers. Installing the Python package alone provides `tmem-core` but does not install the required shell integration.
 
-The interactive shell integration is essential. A standalone child process cannot change its parent shell, so `cd`, `source`, `export`, aliases, shell options, and similar commands require the Bash function installed by `install.sh`. The fallback executable refuses `tmem` and `tmem run …` rather than silently running them in a subprocess.
+The interactive shell integration is essential. A standalone child process cannot change its parent shell, so `cd`, `source`, environment changes, functions and similar commands require the shell adapter. The adapters resolve the selected memory and arrange for the resulting command to execute in the current shell; the exact mechanics differ between Bash, zsh and PowerShell.
 
 ## Main interaction model
 
@@ -156,6 +158,28 @@ Non-interactive creation is also available:
 ```bash
 tmem save service-logs -- 'docker compose logs worker'
 ```
+
+### Import and export
+
+Use the versioned JSON interchange format to back up or move saved memories between machines:
+
+```bash
+tmem export > tmem-memories.json
+tmem export deploy logs > team-memories.json
+tmem import team-memories.json
+```
+
+Exported definitions retain each memory's shell, scope, description, group steps, stop-on-error setting and parameter defaults. History, run counts and remembered parameter values are intentionally not exported.
+
+Directory scopes can be remapped while importing:
+
+```bash
+tmem import team-memories.json --scope preserve
+tmem import team-memories.json --scope global
+tmem import team-memories.json --scope here
+```
+
+Conflicts fail by default. Use `--on-conflict skip` or `--on-conflict replace` explicitly when that is desired. See [PORTABILITY.md](PORTABILITY.md#memory-import-and-export) for the rationale and cross-platform guidance.
 
 ### Directory memories
 
@@ -258,180 +282,42 @@ tmem run release tag=v1.4.0
 
 The group executes in the current shell. Therefore this is valid and leaves the caller inside `/tmp/project` with the virtual environment active:
 
-```text
-1. cd /tmp/project
-2. source .venv/bin/activate
+```bash
+tmem group activate -- 'cd /tmp/project' ::: 'source .venv/bin/activate'
+tmem run activate
 ```
 
-A group can also be created without the TUI by separating steps with `:::`:
+## Non-interactive history queries
 
 ```bash
-tmem group release -- \
-  'git tag {{tag}}' ::: \
-  'git push origin {{tag}}'
-
-# Bind the group to the current directory instead:
-tmem group --here release -- \
-  'git tag {{tag}}' ::: \
-  'git push origin {{tag}}'
-```
-
-## Non-interactive history access
-
-`tmem search` prints fuzzy matches and never runs them:
-
-```bash
-tmem search dcker
-tmem search 'kubectl logs' --limit 20
-tmem search docker --cwd "$PWD"
-tmem search worker --failed
-tmem search postgres --json
-```
-
-Additional views:
-
-```bash
-tmem failed
+tmem search docker
+tmem failed deploy
 tmem today
 tmem cwd
 tmem stats
-tmem list
-tmem show release
 ```
 
-## Import existing Bash history
+Add `--json` to history query commands when machine-readable output is useful.
 
-Live tracking begins once the shell integration is loaded. Existing history can be imported separately:
+## History import
+
+`tmem import-history` imports existing Bash, zsh or PSReadLine history into tmem's history database. This is separate from `tmem import`, which imports saved **memory definitions**.
 
 ```bash
-tmem import-history
-tmem import-history /path/to/another/.bash_history
+tmem import-history ~/.bash_history --shell bash
+tmem import-history ~/.zsh_history --shell zsh
 ```
 
-Imports are idempotent. Ordinary Bash history does not contain reliable working-directory or exit-code metadata, so imported rows leave those fields unknown.
+The PowerShell integration exposes the current PSReadLine history path, so `tmem import-history --shell powershell` can use it automatically when the integration is loaded.
 
-## Recording model
-
-The Bash integration captures one user-entered command per prompt and records it after completion. It also records repetitions that Bash itself may omit due to `HISTCONTROL=ignoredups`. If another application already owns Bash's `DEBUG` trap, `tmem` deliberately leaves it untouched and uses a less complete prompt-time fallback; `tmem doctor` reports the active capture mode.
-
-Each live row contains:
-
-```text
-command
-working directory
-exit code
-start and finish time
-duration
-hostname
-shell session ID
-```
-
-`tmem` records commands, not command output. It is not a terminal-session recorder such as `script` or asciinema.
-
-The SQLite database is stored at:
-
-```text
-~/.local/share/tmem/tmem.db
-```
-
-The data directory is created with mode `0700` and the database with mode `0600` where the filesystem permits it. SQLite WAL mode allows several terminal and tmux sessions to write concurrently.
-
-## Current-shell execution and command display
-
-`tmem` consists of two pieces:
-
-```text
-Bash function
-    resolves selections through tmem-core
-    replaces the tmem invocation in Bash history
-    redraws the previous prompt with the resolved command
-    evaluates the command inside the calling shell
-
-Python core
-    stores/query history in SQLite
-    runs the fzf interaction
-    manages memories, groups, templates, and parameter values
-```
-
-The redraw uses normal ANSI terminal control sequences and accounts for ordinary wrapped invocation lines. Highly customized multiline prompts may not redraw perfectly. Raw terminal capture, shell auditing, or a multiplexer log may still observe that `tmem` was initially typed even though the visible terminal line and Bash history are replaced.
+History imports are idempotent: tmem records source identities and skips entries already imported.
 
 ## Privacy and security
 
-Terminal history can contain credentials, access tokens, database URLs, and sensitive arguments. Pause recording for the current shell with:
+`tmem` stores command history locally in SQLite. Commands may contain credentials, tokens, personal data or other secrets. Treat the tmem database and exported history data accordingly.
 
-```bash
-tmem pause
-# sensitive work
-tmem resume
-```
+Saved-memory exports are narrower than a database backup: they contain reusable command templates and parameter **defaults**, but not command history or remembered parameter values. Defaults can still contain sensitive values, so inspect a memory export before sharing it.
 
-Delete individual rows through the history detail menu.
+`tmem` does not upload history to a service and does not require a network account.
 
-Optional recording exclusions can be configured in:
-
-```text
-~/.config/tmem/config.json
-```
-
-Example:
-
-```json
-{
-  "history_limit": 50000,
-  "ignore_patterns": [
-    "^\\s*tmem(?:\\s|$)",
-    "^\\s*tmem-core(?:\\s|$)",
-    "Authorization: Bearer",
-    "postgres(?:ql)?://[^ ]+:[^ ]+@"
-  ]
-}
-```
-
-Patterns are Python regular expressions. `tmem` and `tmem-core` invocations are ignored by default. `history_limit` controls how many recent records are loaded into the interactive `fzf` view; it does not delete older database rows.
-Invalid JSON, field types, limits, or regular expressions are reported instead of being silently ignored.
-
-Runtime locations can be changed with:
-
-| Variable | Purpose |
-| --- | --- |
-| `TMEM_DATA_DIR` | Directory containing the default database |
-| `TMEM_CONFIG_DIR` | Directory containing `config.json` |
-| `TMEM_DB` | Exact database path; takes precedence over `TMEM_DATA_DIR` |
-
-The installer also accepts `TMEM_INSTALL_APP_DIR`, `TMEM_INSTALL_BIN_DIR`,
-`TMEM_INSTALL_CONFIG_DIR`, and `TMEM_INSTALL_BASHRC` for custom destinations.
-
-Saved memories and history entries are executable local data. Run only commands
-you recognize, and protect the database from other users who could read or
-modify it. Ignore patterns reduce accidental recording but are not a secret
-scanner. See [SECURITY.md](SECURITY.md) for the trust model and vulnerability
-reporting process.
-
-## Development
-
-Create an isolated development environment and install the test tools:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev]"
-make test
-make build
-```
-
-The test suite includes a pseudo-terminal integration test proving that a resolved `cd /tmp`:
-
-- changes the directory of the actual calling Bash process;
-- is redrawn as the visible command;
-- is recorded as `cd /tmp` rather than `tmem run …`.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture constraints and pull
-request guidance.
-
-## Uninstall
-
-```bash
-./uninstall.sh
-```
-
-The uninstaller deliberately leaves `~/.local/share/tmem/tmem.db` in place. Delete that file manually only when the stored history should also be erased.
+Execution remains shell execution. Selecting a historical command or saved memory runs it with the permissions of the current shell. Review unfamiliar commands before running them, particularly imported memories.
