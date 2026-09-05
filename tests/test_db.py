@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 import stat
 import sqlite3
 from pathlib import Path
 
-from tmem.db import TmemDB
+from tmem.db import TmemDB, normalize_scope_cwd
 
 
 class DatabaseTests(unittest.TestCase):
@@ -22,7 +23,7 @@ class DatabaseTests(unittest.TestCase):
         for finished in (1000, 2000):
             self.db.record_history(
                 command="docker ps",
-                cwd="/project",
+                cwd=normalize_scope_cwd(str(Path("/project").resolve())),
                 exit_code=0,
                 started_at_ms=finished - 10,
                 finished_at_ms=finished,
@@ -75,6 +76,7 @@ class DatabaseTests(unittest.TestCase):
             self.db.update_memory(memory.id, steps=["   "])
         self.assertEqual(self.db.get_memory(memory.id).steps[0].command_template, "echo ok")
 
+    @unittest.skipIf(os.name == "nt", "POSIX permission bits")
     def test_existing_database_parent_permissions_are_unchanged(self) -> None:
         parent = Path(self.tempdir.name) / "shared"
         parent.mkdir(mode=0o755)
@@ -92,28 +94,28 @@ class DatabaseTests(unittest.TestCase):
     def test_directory_memory_shadows_global_memory(self) -> None:
         global_memory = self.db.create_memory("watch", ["echo global"])
         local_a = self.db.create_memory(
-            "watch", ["echo a"], scope_cwd="/projects/a"
+            "watch", ["echo a"], scope_cwd=normalize_scope_cwd(str(Path("/projects/a").resolve()))
         )
         local_b = self.db.create_memory(
-            "watch", ["echo b"], scope_cwd="/projects/b"
+            "watch", ["echo b"], scope_cwd=normalize_scope_cwd(str(Path("/projects/b").resolve()))
         )
 
-        self.assertEqual(self.db.resolve_memory("watch", "/projects/a").id, local_a.id)
-        self.assertEqual(self.db.resolve_memory("watch", "/projects/b").id, local_b.id)
-        self.assertEqual(self.db.resolve_memory("watch", "/projects/other").id, global_memory.id)
+        self.assertEqual(self.db.resolve_memory("watch", normalize_scope_cwd(str(Path("/projects/a").resolve()))).id, local_a.id)
+        self.assertEqual(self.db.resolve_memory("watch", normalize_scope_cwd(str(Path("/projects/b").resolve()))).id, local_b.id)
+        self.assertEqual(self.db.resolve_memory("watch", normalize_scope_cwd(str(Path("/projects/other").resolve()))).id, global_memory.id)
         self.assertEqual(self.db.get_memory("watch").id, global_memory.id)
         with self.assertRaises(sqlite3.IntegrityError):
-            self.db.create_memory("WATCH", ["echo duplicate"], scope_cwd="/projects/a")
+            self.db.create_memory("WATCH", ["echo duplicate"], scope_cwd=normalize_scope_cwd(str(Path("/projects/a").resolve())))
 
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.update_memory(local_a.id, scope_cwd="")
-        self.assertEqual(self.db.get_memory(local_a.id).scope_cwd, "/projects/a")
+        self.assertEqual(self.db.get_memory(local_a.id).scope_cwd, normalize_scope_cwd(str(Path("/projects/a").resolve())))
 
     def test_available_memories_hide_shadowed_global_name(self) -> None:
         global_watch = self.db.create_memory("watch", ["echo global"])
         global_logs = self.db.create_memory("logs", ["echo logs"])
-        local_watch = self.db.create_memory("watch", ["echo local"], scope_cwd="/project")
-        available = self.db.list_available_memories("/project")
+        local_watch = self.db.create_memory("watch", ["echo local"], scope_cwd=normalize_scope_cwd(str(Path("/project").resolve())))
+        available = self.db.list_available_memories(normalize_scope_cwd(str(Path("/project").resolve())))
         self.assertEqual({memory.id for memory in available}, {global_logs.id, local_watch.id})
         self.assertNotIn(global_watch.id, {memory.id for memory in available})
 
@@ -168,14 +170,15 @@ class DatabaseTests(unittest.TestCase):
         with TmemDB(path) as migrated:
             memory = migrated.get_memory("release")
             self.assertEqual(memory.id, 7)
+            self.assertEqual(memory.shell, "bash")
             self.assertTrue(memory.is_global)
             self.assertEqual(memory.run_count, 4)
             self.assertEqual(memory.last_run_at_ms, 30)
             self.assertEqual(memory.steps[0].id, 9)
             self.assertEqual(migrated.parameter_definitions(7)[0].default_value, "v1")
             self.assertEqual(migrated.parameter_values(7, "tag"), ["v2"])
-            migrated.create_memory("release", ["echo local"], scope_cwd="/project")
-            self.assertEqual(migrated.connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            migrated.create_memory("release", ["echo local"], scope_cwd=normalize_scope_cwd(str(Path("/project").resolve())))
+            self.assertEqual(migrated.connection.execute("PRAGMA user_version").fetchone()[0], 3)
             self.assertEqual(migrated.connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
         with TmemDB(path) as reopened:

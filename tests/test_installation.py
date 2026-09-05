@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 
+@unittest.skipIf(os.name == "nt", "POSIX installer; Windows installer tested separately")
 class InstallationTests(unittest.TestCase):
     def test_custom_paths_are_quoted_and_uninstall_preserves_unrelated_files(self) -> None:
         repository = Path(__file__).parents[1]
@@ -24,6 +25,7 @@ class InstallationTests(unittest.TestCase):
             sentinel.write_text("owned by user", encoding="utf-8")
 
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment.update(
                 {
                     "HOME": str(home),
@@ -91,6 +93,7 @@ class InstallationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment["HOME"] = str(home)
             environment["TMEM_INSTALL_BASHRC"] = str(bashrc)
             subprocess.run(
@@ -129,6 +132,7 @@ class InstallationTests(unittest.TestCase):
             for path, content in targets.items():
                 path.write_text(content, encoding="utf-8")
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment["HOME"] = str(home)
             result = subprocess.run(
                 [str(repository / "install.sh")],
@@ -162,6 +166,7 @@ class InstallationTests(unittest.TestCase):
             comment = "# tmem terminal command memory"
             bashrc.write_text(comment + "\n# user content\n", encoding="utf-8")
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment["HOME"] = str(home)
             environment["TMEM_INSTALL_BASHRC"] = str(bashrc)
             subprocess.run(

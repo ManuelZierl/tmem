@@ -36,6 +36,7 @@ class Memory:
     updated_at_ms: int
     last_run_at_ms: Optional[int]
     run_count: int
+    shell: str = "bash"
     scope_cwd: str = ""
     steps: list[MemoryStep] = field(default_factory=list)
 

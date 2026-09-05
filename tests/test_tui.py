@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import os
 from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
-from tmem.db import TmemDB
+from tmem.db import TmemDB, normalize_scope_cwd
 from tmem.terminal_ui import FzfResult
 from tmem.tui import ItemRef, TmemUI
 
@@ -109,9 +110,9 @@ class TuiLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with TmemDB(Path(directory) / "tmem.db") as db:
                 db.create_memory("watch", ["echo global"])
-                db.create_memory("watch", ["echo local"], scope_cwd="/project")
-                db.create_memory("other", ["echo elsewhere"], scope_cwd="/other")
-                with patch("tmem.tui.current_scope_cwd", return_value="/project"):
+                db.create_memory("watch", ["echo local"], scope_cwd=normalize_scope_cwd(str(Path("/project").resolve())))
+                db.create_memory("other", ["echo elsewhere"], scope_cwd=normalize_scope_cwd(str(Path("/other").resolve())))
+                with patch("tmem.tui.current_scope_cwd", return_value=normalize_scope_cwd(str(Path("/project").resolve()))):
                     rows = TmemUI(db)._main_rows()
                 memory_rows = [row for row in rows if row.startswith("m:")]
                 self.assertEqual(len(memory_rows), 1)
@@ -122,11 +123,11 @@ class TuiLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with TmemDB(Path(directory) / "tmem.db") as db:
                 memory = db.create_memory("watch", ["echo global"])
-                with patch("tmem.tui.current_scope_cwd", return_value="/project"):
+                with patch("tmem.tui.current_scope_cwd", return_value=normalize_scope_cwd(str(Path("/project").resolve()))):
                     ui = TmemUI(db)
                 with patch.object(ui, "_choose_action", side_effect=["scope", None]):
                     self.assertIsNone(ui._memory_actions(memory))
-                self.assertEqual(db.get_memory(memory.id).scope_cwd, "/project")
+                self.assertEqual(db.get_memory(memory.id).scope_cwd, normalize_scope_cwd(str(Path("/project").resolve())))
 
     def test_editor_can_change_memory_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -136,13 +137,13 @@ class TuiLogicTests(unittest.TestCase):
                 def change_directory(command):
                     path = Path(command[-1])
                     payload = json.loads(path.read_text(encoding="utf-8"))
-                    payload["directory"] = "/project"
+                    payload["directory"] = normalize_scope_cwd(str(Path("/project").resolve()))
                     path.write_text(json.dumps(payload), encoding="utf-8")
                     return SimpleNamespace(returncode=0)
 
                 with patch("tmem.tui.run_on_terminal", side_effect=change_directory):
                     updated = TmemUI(db)._edit_memory(memory)
-                self.assertEqual(updated.scope_cwd, "/project")
+                self.assertEqual(updated.scope_cwd, normalize_scope_cwd(str(Path("/project").resolve())))
 
 
 if __name__ == "__main__":

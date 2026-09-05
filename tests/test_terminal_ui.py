@@ -17,6 +17,9 @@ try:
 except ImportError:  # pragma: no cover
     pexpect = None
 
+if os.name == "nt":
+    pexpect = None
+
 
 class TerminalUiTests(unittest.TestCase):
     @unittest.skipIf(shutil.which("fzf") is None, "requires fzf")
