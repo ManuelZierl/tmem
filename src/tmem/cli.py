@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from . import __version__
+from .shells import active_shell, SHELLS
 from .config import db_path, load_config
 from .db import TmemDB, current_scope_cwd, now_ms
 from .fuzzy import fuzzy_filter
@@ -24,6 +25,8 @@ from .tui import Execution, TmemUI
 
 
 def _protocol(execution: Execution) -> str:
+    if "\0" in execution.script:
+        raise ValueError("Shell commands cannot contain NUL characters")
     script = base64.b64encode(execution.script.encode("utf-8")).decode("ascii")
     display = base64.b64encode(execution.display.encode("utf-8")).decode("ascii")
     memory_id = str(execution.memory_id or "")
@@ -134,6 +137,7 @@ def _print_memory(memory: Memory, as_json: bool = False) -> None:
         "last_run_at_ms": memory.last_run_at_ms,
         "commands": [step.command_template for step in memory.steps],
         "directory": memory.scope_cwd or None,
+        "shell": memory.shell,
     }
     if as_json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -158,6 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"tmem {__version__}")
     sub = parser.add_subparsers(dest="command")
 
+    sub.add_parser("clock", help=argparse.SUPPRESS)
+    decode = sub.add_parser("shell-decode", help=argparse.SUPPRESS)
+    decode.add_argument("value")
+    init = sub.add_parser("init", help="Print a shell integration for your profile")
+    init.add_argument("shell", choices=SHELLS)
     sub.add_parser("shell-ui", help="Internal: open the TUI and emit a shell response")
     shell_run = sub.add_parser("shell-run", help="Internal: resolve a memory for the shell")
     shell_run.add_argument("name")
@@ -233,8 +242,9 @@ def build_parser() -> argparse.ArgumentParser:
     stats = sub.add_parser("stats", help="Show basic command-history statistics")
     stats.add_argument("--limit", type=_non_negative_int, default=15)
 
-    importer = sub.add_parser("import-history", help="Import an existing Bash history file")
-    importer.add_argument("path", nargs="?", default=str(Path.home() / ".bash_history"))
+    importer = sub.add_parser("import-history", help="Import Bash, zsh, or PSReadLine history")
+    importer.add_argument("path", nargs="?")
+    importer.add_argument("--shell", choices=SHELLS)
 
     sub.add_parser("doctor", help="Check the installation")
     return parser
@@ -258,6 +268,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        # Native PowerShell pipes and fzf use UTF-8, irrespective of Windows ACP.
+        for stream in (sys.stdin, sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure") and not stream.isatty():
+                stream.reconfigure(encoding="utf-8")
+        if args.command == "clock":
+            print(now_ms())
+            return 0
+        if args.command == "shell-decode":
+            print(base64.b64decode(args.value, validate=True).decode("utf-8"), end="")
+            return 0
+        if args.command == "init":
+            suffix = "ps1" if args.shell == "powershell" else args.shell
+            directory = Path(__file__).parent / "shell"
+            if not directory.is_dir():  # editable/source checkout
+                directory = Path(__file__).parents[2] / "shell"
+            print((directory / f"tmem.{suffix}").read_text(encoding="utf-8"), end="")
+            return 0
         config = load_config()
         with TmemDB(db_path()) as db:
             if args.command in (None, "shell-ui"):
@@ -446,11 +473,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 return 0
 
             if args.command == "import-history":
-                path = Path(args.path).expanduser()
+                shell = args.shell or active_shell()
+                defaults = {"bash": Path.home() / ".bash_history", "zsh": Path.home() / ".zsh_history"}
+                default = os.environ.get("TMEM_HISTORY_FILE") or defaults.get(shell)
+                if not args.path and default is None:
+                    raise ValueError("Provide the PSReadLine history path or load the PowerShell integration")
+                path = Path(args.path or default).expanduser()
                 if not path.exists():
                     print(f"History file not found: {path}", file=sys.stderr)
                     return 1
-                imported, skipped = db.import_bash_history(path)
+                imported, skipped = db.import_history(path, shell)
                 print(f"Imported {imported} commands; skipped {skipped} already imported entries.")
                 return 0
 
@@ -459,7 +491,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     "Python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
                     "Database": str(db.path),
                     "fzf": shutil.which("fzf") or "missing",
-                    "Bash integration": "loaded" if os.environ.get("TMEM_SHELL_INTEGRATION") == "1" else "not detected",
+                    "Shell integration": "loaded" if os.environ.get("TMEM_SHELL_INTEGRATION") == "1" else "not detected",
+                    "Shell": active_shell(),
                     "Capture mode": os.environ.get("TMEM_CAPTURE_MODE", "not detected"),
                 }
                 failed_check = False

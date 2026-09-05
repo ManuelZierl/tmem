@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,7 +21,11 @@ def data_dir() -> Path:
     if override:
         return Path(override).expanduser()
     xdg = os.environ.get("XDG_DATA_HOME")
-    return Path(xdg).expanduser() / "tmem" if xdg else Path.home() / ".local/share/tmem"
+    if xdg:
+        return Path(xdg).expanduser() / "tmem"
+    if sys.platform == "win32":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local") / "tmem"
+    return Path.home() / ".local/share/tmem"
 
 
 def config_dir() -> Path:
@@ -28,7 +33,11 @@ def config_dir() -> Path:
     if override:
         return Path(override).expanduser()
     xdg = os.environ.get("XDG_CONFIG_HOME")
-    return Path(xdg).expanduser() / "tmem" if xdg else Path.home() / ".config/tmem"
+    if xdg:
+        return Path(xdg).expanduser() / "tmem"
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData/Roaming") / "tmem"
+    return Path.home() / ".config/tmem"
 
 
 def db_path() -> Path:

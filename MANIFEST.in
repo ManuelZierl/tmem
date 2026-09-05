@@ -1,4 +1,6 @@
 include LICENSE README.md CONTRIBUTING.md SECURITY.md Makefile
 include install.sh uninstall.sh
 recursive-include shell *
-recursive-include tests *.py
+recursive-include tests *.py *.ps1
+
+include install.ps1 uninstall.ps1 setup.py

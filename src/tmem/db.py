@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import sqlite3
 import time
@@ -9,6 +10,7 @@ from typing import Iterable, Optional
 
 from .models import HistoryEntry, Memory, MemoryStep, ParameterDefinition
 from .templates import parameter_names
+from .shells import active_shell, SHELLS
 
 
 def now_ms() -> int:
@@ -38,11 +40,11 @@ def normalize_scope_cwd(value: Optional[str]) -> str:
     path = Path(value).expanduser()
     if not path.is_absolute():
         raise ValueError("Memory directories must be absolute paths")
-    return str(path.resolve(strict=False))
+    return os.path.normcase(str(path.resolve(strict=False)))
 
 
 def current_scope_cwd() -> str:
-    return str(Path.cwd().resolve())
+    return normalize_scope_cwd(str(Path.cwd()))
 
 
 class TmemDB:
@@ -70,6 +72,8 @@ class TmemDB:
         self.close()
 
     def _migrate(self) -> None:
+        if self.connection.execute("PRAGMA user_version").fetchone()[0] > 3:
+            raise ValueError("This database was created by a newer tmem version")
         self._migrate_memory_scopes()
         with self.connection:
             self.connection.executescript(
@@ -140,9 +144,15 @@ class TmemDB:
                         ON DELETE CASCADE
                 );
 
-                PRAGMA user_version = 2;
                 """
             )
+        with self.connection:
+            # Serialized check/add also permits concurrent shell startups.
+            self.connection.execute("BEGIN IMMEDIATE")
+            columns = self.connection.execute("PRAGMA table_info(memories)").fetchall()
+            if not any(row["name"] == "shell" for row in columns):
+                self.connection.execute("ALTER TABLE memories ADD COLUMN shell TEXT NOT NULL DEFAULT 'bash'")
+            self.connection.execute("PRAGMA user_version = 3")
         violations = self.connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise RuntimeError("Database migration left invalid memory references")
@@ -410,7 +420,11 @@ class TmemDB:
         stop_on_error: bool = True,
         defaults: Optional[dict[str, str]] = None,
         scope_cwd: Optional[str] = None,
+        shell: Optional[str] = None,
     ) -> Memory:
+        shell = shell or active_shell()
+        if shell not in SHELLS:
+            raise ValueError(f"Unsupported shell: {shell}")
         validate_memory_name(name)
         validate_memory_steps(steps)
         normalized_scope = normalize_scope_cwd(scope_cwd)
@@ -419,11 +433,11 @@ class TmemDB:
             cursor = self.connection.execute(
                 """
                 INSERT INTO memories(
-                    name, scope_cwd, description, stop_on_error, created_at_ms, updated_at_ms
+                    name, scope_cwd, description, stop_on_error, created_at_ms, updated_at_ms, shell
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, normalized_scope, description, int(stop_on_error), timestamp, timestamp),
+                (name, normalized_scope, description, int(stop_on_error), timestamp, timestamp, shell),
             )
             memory_id = int(cursor.lastrowid)
             self.connection.executemany(
@@ -575,6 +589,7 @@ class TmemDB:
             last_run_at_ms=row["last_run_at_ms"],
             run_count=row["run_count"],
             scope_cwd=row["scope_cwd"],
+            shell=row["shell"],
             steps=steps,
         )
 
@@ -726,4 +741,50 @@ class TmemDB:
             else:
                 imported += 1
             pending_timestamp_ms = None
+        return imported, skipped
+
+
+    def import_history(self, path: Path, shell: str) -> tuple[int, int]:
+        if shell == "bash":
+            return self.import_bash_history(path)
+        if shell not in {"zsh", "powershell"}:
+            raise ValueError(f"Unsupported history format: {shell}")
+        # Zsh EXTENDED_HISTORY and PSReadLine use escaped physical newlines.
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        records = []
+        pending = ""
+        timestamp = None
+        escape = "`" if shell == "powershell" else "\\"
+        for line in lines:
+            if not pending and shell == "zsh":
+                match = re.match(r"^: (\d+):(\d+);(.*)$", line)
+                if match:
+                    timestamp = int(match.group(1)) * 1000
+                    line = match.group(3)
+            count = len(line) - len(line.rstrip(escape))
+            if count % 2:
+                pending += line[:-1] + "\n"
+                continue
+            command = pending + line
+            pending = ""
+            if command.strip():
+                records.append((command, timestamp))
+            timestamp = None
+        if pending.strip():
+            records.append((pending.rstrip("\n"), timestamp))
+        imported = skipped = 0
+        for ordinal, (command, stamp) in enumerate(records, 1):
+            digest = hashlib.sha256(
+                f"{shell}\0{path.resolve()}\0{ordinal}\0{stamp}\0{command}".encode("utf-8")
+            ).hexdigest()
+            result = self.record_history(
+                command=command, cwd="", exit_code=None, started_at_ms=stamp,
+                finished_at_ms=stamp if stamp is not None else now_ms(),
+                hostname="", session_id="import", shell=shell,
+                source=f"{shell}-history", source_key=digest,
+            )
+            if result is None:
+                skipped += 1
+            else:
+                imported += 1
         return imported, skipped

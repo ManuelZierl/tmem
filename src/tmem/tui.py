@@ -7,12 +7,14 @@ import shlex
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Sequence
 
+from .shells import active_shell, compatible_shell
 from .db import (
     TmemDB,
     current_scope_cwd,
@@ -58,9 +60,14 @@ class ItemRef:
 
 class TmemUI:
     def __init__(self, db: TmemDB, history_limit: int = 5000):
+        self.shell = active_shell()
         self.db = db
         self.history_limit = history_limit
         self.scope_cwd = current_scope_cwd()
+
+    def _check_shell(self, source: str) -> None:
+        if not compatible_shell(source, self.shell):
+            raise ValueError(f"This command belongs to {source}; it cannot run in {self.shell}")
 
     def run(self) -> Optional[Execution]:
         while True:
@@ -99,6 +106,8 @@ class TmemUI:
     def _main_rows(self) -> list[str]:
         rows: list[str] = []
         for memory in self.db.list_available_memories(self.scope_cwd):
+            if not compatible_shell(memory.shell, self.shell):
+                continue
             icon = "▦" if memory.is_group else "★"
             count = f" [{len(memory.steps)} steps]" if memory.is_group else ""
             scope = "global" if memory.is_global else "here"
@@ -106,6 +115,8 @@ class TmemUI:
             rows.append(f"m:{memory.id}\t{icon} {memory.name} [{scope}]{count}  {summary}")
 
         for entry in self.db.list_history(limit=self.history_limit):
+            if not compatible_shell(entry.shell, self.shell):
+                continue
             time_text = self._format_time(entry.finished_at_ms)
             status = "?" if entry.exit_code is None else ("✓" if entry.exit_code == 0 else f"×{entry.exit_code}")
             cwd = self._short_cwd(entry.cwd)
@@ -161,6 +172,7 @@ class TmemUI:
                 entries = self.db.get_history([ref.id])
                 if not entries:
                     return None
+                self._check_shell(entries[0].shell)
                 return Execution(script=entries[0].command, display=entries[0].command)
             memory = self.db.get_memory(ref.id)
             return self.resolve_memory(memory) if memory else None
@@ -176,10 +188,12 @@ class TmemUI:
             return None
         entries = self.db.get_history([ref.id for ref in refs])
         entries.sort(key=lambda item: (item.finished_at_ms, item.id))
+        for entry in entries:
+            self._check_shell(entry.shell)
         commands = [entry.command for entry in entries]
         return Execution(
-            script=build_script(commands, stop_on_error=True),
-            display=" &&\n".join(commands),
+            script=build_script(commands, stop_on_error=True, shell=self.shell),
+            display=(build_script(commands, shell=self.shell) if self.shell == "powershell" else " &&\n".join(commands)),
         )
 
     def _open_actions(self, refs: Sequence[ItemRef]) -> Optional[Execution]:
@@ -209,6 +223,7 @@ class TmemUI:
         return result.rows[0].split("\t", 1)[0]
 
     def _history_actions(self, entry: HistoryEntry) -> Optional[Execution]:
+        self._check_shell(entry.shell)
         while True:
             details = [
                 self._one_line(entry.command, 220),
@@ -286,6 +301,8 @@ class TmemUI:
             return None
         entries = self.db.get_history([ref.id for ref in history_refs])
         entries.sort(key=lambda item: (item.finished_at_ms, item.id))
+        for entry in entries:
+            self._check_shell(entry.shell)
         commands = [entry.command for entry in entries]
         action = self._choose_action(
             f"{len(commands)} selected commands",
@@ -300,7 +317,7 @@ class TmemUI:
             ],
         )
         if action == "run":
-            return Execution(build_script(commands, True), " &&\n".join(commands))
+            return Execution(build_script(commands, True, shell=self.shell), build_script(commands, True, shell=self.shell) if self.shell == "powershell" else " &&\n".join(commands))
         if action == "save":
             self._save_memory(commands, defaults={})
         elif action == "save-here":
@@ -317,7 +334,8 @@ class TmemUI:
         return None
 
     def _group_builder(self, initial_id: Optional[int] = None, scope_cwd: str = "") -> None:
-        entries = self.db.list_history(limit=self.history_limit)
+        entries = [entry for entry in self.db.list_history(limit=self.history_limit)
+                   if compatible_shell(entry.shell, self.shell)]
         rows = [
             f"h:{entry.id}\t{self._format_time(entry.finished_at_ms):<11} "
             f"{self._short_cwd(entry.cwd):<24} {self._one_line(entry.command)}"
@@ -403,7 +421,7 @@ class TmemUI:
         token_rows: list[str] = []
         token_lookup: dict[str, tuple[int, int, int, str]] = {}
         for command_index, command in enumerate(commands):
-            for token_index, token in enumerate(shell_tokens(command)):
+            for token_index, token in enumerate(shell_tokens(command, shell=self.shell)):
                 key = f"{command_index}:{token_index}"
                 token_lookup[key] = (command_index, token.start, token.end, token.value)
                 token_rows.append(
@@ -483,6 +501,7 @@ class TmemUI:
         use_defaults_without_prompt: bool = False,
     ) -> Optional[Execution]:
         overrides = overrides or {}
+        self._check_shell(memory.shell)
         definitions = self.db.parameter_definitions(memory.id)
         known = {definition.name for definition in definitions}
         unknown = set(overrides) - known
@@ -511,7 +530,7 @@ class TmemUI:
             self.db.remember_parameter_value(memory.id, definition.name, value)
 
         try:
-            commands = [render_template(step.command_template, values) for step in memory.steps]
+            commands = [render_template(step.command_template, values, shell=self.shell) for step in memory.steps]
         except KeyError as error:
             show_text("Cannot run memory", [str(error)])
             return None
@@ -520,8 +539,10 @@ class TmemUI:
         else:
             separator = " &&\n" if memory.stop_on_error else "\n"
             display = separator.join(commands)
+        if self.shell == "powershell":
+            display = build_script(commands, memory.stop_on_error, shell=self.shell)
         return Execution(
-            script=build_script(commands, memory.stop_on_error),
+            script=build_script(commands, memory.stop_on_error, shell=self.shell),
             display=display,
             memory_id=memory.id,
         )
@@ -663,7 +684,8 @@ class TmemUI:
                     return None
 
     def _append_history(self, memory: Memory) -> None:
-        entries = self.db.list_history(limit=self.history_limit)
+        entries = [entry for entry in self.db.list_history(limit=self.history_limit)
+                   if compatible_shell(entry.shell, self.shell)]
         rows = [
             f"h:{entry.id}\t{self._format_time(entry.finished_at_ms):<11} "
             f"{self._short_cwd(entry.cwd):<24} {self._one_line(entry.command)}"
@@ -751,16 +773,16 @@ class TmemUI:
                 allow_empty=False,
             )
 
-        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ("notepad.exe" if os.name == "nt" else "nano")
         with tempfile.NamedTemporaryFile(
-            mode="w+", suffix=".sh", encoding="utf-8", delete=False
+            mode="w+", suffix=".ps1" if self.shell == "powershell" else ".sh", encoding="utf-8", delete=False
         ) as handle:
             handle.write(command)
             handle.write("\n")
             path = Path(handle.name)
         try:
             try:
-                result = run_on_terminal([*shlex.split(editor), str(path)])
+                result = run_on_terminal([*_editor_command(editor), str(path)])
             except (OSError, ValueError) as error:
                 show_text("Editor failed", [str(error)])
                 return None
@@ -775,7 +797,7 @@ class TmemUI:
                 pass
 
     def _edit_memory(self, memory: Memory) -> Optional[Memory]:
-        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ("notepad.exe" if os.name == "nt" else "nano")
         payload = {
             "name": memory.name,
             "directory": memory.scope_cwd or None,
@@ -790,7 +812,7 @@ class TmemUI:
             handle.write("\n")
             path = Path(handle.name)
         try:
-            result = run_on_terminal([*shlex.split(editor), str(path)])
+            result = run_on_terminal([*_editor_command(editor), str(path)])
             if result.returncode != 0:
                 show_text("Editor failed", [f"{editor} exited with status {result.returncode}."])
                 return None
@@ -843,6 +865,14 @@ class TmemUI:
 
     def _copy(self, value: str) -> None:
         commands: list[list[str]] = []
+        if sys.platform == "darwin" and shutil.which("pbcopy"):
+            commands.append(["pbcopy"])
+        if os.name == "nt" and shutil.which("pwsh"):
+            commands.append([
+                "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                "[Console]::InputEncoding = [Text.UTF8Encoding]::new($false); "
+                "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+            ])
         if shutil.which("wl-copy"):
             commands.append(["wl-copy"])
         if shutil.which("xclip"):
@@ -850,7 +880,7 @@ class TmemUI:
         if shutil.which("xsel"):
             commands.append(["xsel", "--clipboard", "--input"])
         for command in commands:
-            result = subprocess.run(command, input=value, text=True, check=False)
+            result = subprocess.run(command, input=value, text=True, encoding="utf-8", check=False)
             if result.returncode == 0:
                 show_text("Copied", [self._one_line(value, 220)])
                 return
@@ -859,6 +889,16 @@ class TmemUI:
             [
                 value,
                 "",
-                "Install wl-clipboard, xclip, or xsel to copy directly.",
+                "Clipboard support needs pbcopy (macOS), pwsh (Windows), or wl-copy/xclip/xsel (Linux).",
             ],
         )
+
+
+def _editor_command(editor: str) -> list[str]:
+    # A quoted Windows executable path must not lose its backslashes.
+    if os.name == "nt":
+        if Path(editor).is_file():
+            return [editor]
+        return [part[1:-1] if part.startswith('"') and part.endswith('"') else part
+                for part in shlex.split(editor, posix=False)]
+    return shlex.split(editor)
