@@ -87,10 +87,18 @@ def build_script(commands: list[str], stop_on_error: bool = True, *, shell: str 
     if not stop_on_error:
         return "\n".join(commands)
 
-    # Braces keep cd/source/export and other shell-state changes in the caller's
-    # shell while still making each group step conditional on the previous one.
-    prefix = ". " if (shell or active_shell()) == "powershell" else ""
-    wrapped = [prefix + "{\n" + command + "\n}" for command in commands]
+    selected_shell = shell or active_shell()
+    if selected_shell == "powershell":
+        # Pipeline-chain operators work on pipelines rather than arbitrary
+        # statements. A subexpression lets assignments/control statements be
+        # used as chain elements while PowerShell 7 preserves the contained
+        # command's `$?`. Unlike invoking a scriptblock, `$()` doesn't introduce
+        # a child scope, so variables/functions/cwd changes remain in the caller.
+        wrapped = ["$(\n" + command + "\n)" for command in commands]
+    else:
+        # Braces keep cd/source/export and other shell-state changes in the
+        # caller's shell while making each group step conditional.
+        wrapped = ["{\n" + command + "\n}" for command in commands]
     return " &&\n".join(wrapped)
 
 
