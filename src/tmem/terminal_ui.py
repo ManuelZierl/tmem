@@ -3,7 +3,10 @@ from __future__ import annotations
 import base64
 import contextlib
 import os
-import readline
+try:
+    import readline  # noqa: F401 - line editing on Unix
+except ImportError:
+    readline = None
 import shutil
 import subprocess
 import sys
