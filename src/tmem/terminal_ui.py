@@ -67,6 +67,19 @@ def _standard_streams_on_tty(tty_fd: int):
 
 
 def run_on_terminal(command: list[str]) -> subprocess.CompletedProcess[str]:
+    # On Windows there is no /dev/tty. stdin and stderr are still inherited
+    # from the interactive PowerShell console while stdout is reserved for the
+    # tmem execution protocol, so route editor UI through those inherited
+    # console handles instead of spawning it on captured stdout.
+    if os.name == "nt":
+        return subprocess.run(
+            command,
+            stdin=sys.stdin,
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+            text=True,
+            check=False,
+        )
     tty_fd = _open_tty()
     if tty_fd is None:
         raise OSError("A controlling terminal is required to open an editor")
