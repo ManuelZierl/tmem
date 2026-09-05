@@ -8,6 +8,7 @@ $env:TMEM_SESSION_ID = "${env:COMPUTERNAME}:${PID}:$([guid]::NewGuid())"
 $global:_TmemPending = $null
 $global:_TmemMemoryId = $null
 $global:_TmemCoreStatus = 0
+$global:_TmemPwshPath = (Get-Process -Id $PID).Path
 
 function global:_tmem_core {
     param([string[]] $Arguments, [AllowNull()][string] $InputText = $null)
@@ -56,32 +57,6 @@ function global:_tmem_prepare {
     return _tmem_resolve -Arguments (@('shell-run') + $args)
 }
 
-function global:_tmem_propagate_failure {
-    [CmdletBinding()]
-    param([int] $NativeCode)
-
-    # A basic PowerShell function cannot make its caller's $? false merely by
-    # calling Write-Error. $PSCmdlet.WriteError() in an advanced function can.
-    # Silence the synthetic ErrorRecord so tmem matches an ordinary native
-    # non-zero exit: status changes, but no additional error message is printed.
-    $global:LASTEXITCODE = $NativeCode
-    $exception = [System.Management.Automation.RuntimeException]::new(
-        "tmem command failed with exit code $NativeCode"
-    )
-    $record = [System.Management.Automation.ErrorRecord]::new(
-        $exception, 'TmemCommandFailed',
-        [System.Management.Automation.ErrorCategory]::NotSpecified, $null
-    )
-    $oldPreference = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'SilentlyContinue'
-        $PSCmdlet.WriteError($record)
-    } finally {
-        $ErrorActionPreference = $oldPreference
-        $global:LASTEXITCODE = $NativeCode
-    }
-}
-
 function global:tmem {
     # At the interactive prompt Enter replaces tmem with the actual script.
     # In scripts, `. tmem run name` explicitly opts into the caller's scope.
@@ -115,7 +90,10 @@ function global:tmem {
     $executionSucceeded = $?
     $nativeCode = $global:LASTEXITCODE
     if (!$executionSucceeded) {
-        _tmem_propagate_failure -NativeCode $nativeCode
+        # `$?` for a basic function cannot be assigned directly. Finish with a
+        # real native process carrying the same code; PowerShell then sets both
+        # `$?` and `$LASTEXITCODE` exactly as it would for the failed command.
+        & $global:_TmemPwshPath -NoLogo -NoProfile -NonInteractive -Command "exit $nativeCode"
     }
 }
 
