@@ -27,14 +27,29 @@ foreach ($line in @('tmem save should-not-run -- echo x', 'tmem run state; Write
     Assert ($null -eq (_tmem_expand_line $line)) "unsafe eager expansion: $line"
 }
 
-# A group runs in the caller and stops on a native error, preserving its status.
+# A group runs in caller scope and stops on native error. The real interactive
+# path executes the PSReadLine replacement directly, so PowerShell itself owns
+# both $? and $LASTEXITCODE.
 tmem group grouped -- '$tmemBefore = "yes"' ::: '& $env:TMEM_TEST_PYTHON -c "raise SystemExit(7)"' ::: '$tmemAfter = "no"'
-. tmem run grouped
-$groupSucceeded = $?
-$groupCode = $LASTEXITCODE
-Assert (!$groupSucceeded -and $groupCode -eq 7) 'group lost native failure status'
+$groupExpansion = _tmem_expand_line 'tmem run grouped'
+Assert ($null -ne $groupExpansion.Plan) 'group expansion returned no plan'
+. ([scriptblock]::Create($groupExpansion.Plan.Script))
+$interactiveSucceeded = $?
+$interactiveCode = $LASTEXITCODE
+Assert (!$interactiveSucceeded -and $interactiveCode -eq 7) 'interactive replacement lost native failure status'
 Assert ($tmemBefore -eq 'yes') 'group lost caller scope'
 Assert (!(Get-Variable tmemAfter -ErrorAction Ignore)) 'group continued after error'
+
+# Explicit dot-sourcing is the fallback for scripts/custom Enter bindings. A
+# PowerShell function boundary cannot transparently forward the automatic `$?`
+# variable, but tmem must retain the native exit code and caller scope.
+Remove-Variable tmemBefore -ErrorAction Ignore
+Remove-Variable tmemAfter -ErrorAction Ignore
+. tmem run grouped
+$explicitCode = $LASTEXITCODE
+Assert ($explicitCode -eq 7) 'explicit fallback lost LASTEXITCODE'
+Assert ($tmemBefore -eq 'yes') 'explicit fallback lost caller scope'
+Assert (!(Get-Variable tmemAfter -ErrorAction Ignore)) 'explicit fallback continued after error'
 
 # Explicit recording exercises UTF-8 stdin, metadata, pause and code preservation.
 $global:LASTEXITCODE = 7
