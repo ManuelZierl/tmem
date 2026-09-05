@@ -13,6 +13,9 @@ try:
 except ImportError:  # pragma: no cover
     pexpect = None
 
+if os.name == "nt":
+    pexpect = None
+
 
 @unittest.skipIf(pexpect is None or shutil.which("bash") is None, "requires Bash and pexpect")
 class ShellIntegrationTests(unittest.TestCase):
@@ -30,8 +33,8 @@ class ShellIntegrationTests(unittest.TestCase):
                     case "$1" in
                       memory-exists) exit 0 ;;
                       shell-run)
-                        script=$(printf 'cd /tmp' | base64 -w0)
-                        display=$(printf 'cd /tmp' | base64 -w0)
+                        script=$(printf 'cd /tmp' | base64 | tr -d '\\n')
+                        display=$(printf 'cd /tmp' | base64 | tr -d '\\n')
                         printf 'execute\\t%s\\t%s\\t1\\n' "$script" "$display"
                         ;;
                       record)
@@ -46,6 +49,7 @@ class ShellIntegrationTests(unittest.TestCase):
             )
             core.chmod(0o755)
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment["PATH"] = str(bin_dir) + os.pathsep + environment["PATH"]
             environment["TERM"] = "xterm-256color"
             shell_file = Path(__file__).parents[1] / "shell" / "tmem.bash"
@@ -87,6 +91,7 @@ class ShellIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment["HOME"] = str(home)
             environment["TERM"] = "xterm-256color"
             environment["TMEM_INSTALL_BASHRC"] = str(home / ".bashrc")
@@ -145,7 +150,7 @@ class ShellIntegrationTests(unittest.TestCase):
                 child.expect("__REAL_PROMPT__ ")
                 for _ in range(2):
                     child.sendline("echo __REPEAT__")
-                    child.expect("\r__REPEAT__\r\n")
+                    child.expect("[\r\n]__REPEAT__\r\n")
                     child.expect("__REAL_PROMPT__ ")
                 child.sendline("")
                 child.expect("__REAL_PROMPT__ ")
@@ -208,6 +213,7 @@ class ShellIntegrationTests(unittest.TestCase):
             )
             core.chmod(0o755)
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment["PATH"] = str(bin_dir) + os.pathsep + environment["PATH"]
             environment["TERM"] = "xterm-256color"
             shell_file = Path(__file__).parents[1] / "shell" / "tmem.bash"
@@ -253,6 +259,7 @@ class ShellIntegrationTests(unittest.TestCase):
             for path in (project_a, project_b, other):
                 path.mkdir()
             environment = os.environ.copy()
+            environment["TMEM_INSTALL_SHELL"] = "bash"
             environment["HOME"] = str(home)
             environment["TERM"] = "xterm-256color"
             environment["TMEM_INSTALL_BASHRC"] = str(home / ".bashrc")

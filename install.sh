@@ -5,8 +5,25 @@ ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 APP_DIR=${TMEM_INSTALL_APP_DIR:-"$HOME/.local/share/tmem/app"}
 BIN_DIR=${TMEM_INSTALL_BIN_DIR:-"$HOME/.local/bin"}
 CONFIG_DIR=${TMEM_INSTALL_CONFIG_DIR:-"$HOME/.config/tmem"}
-BASHRC=${TMEM_INSTALL_BASHRC:-"$HOME/.bashrc"}
-SOURCE_STATE=$CONFIG_DIR/bashrc-source-line
+TARGET_SHELL=${TMEM_INSTALL_SHELL:-${SHELL:-bash}}
+TARGET_SHELL=${TARGET_SHELL##*/}
+if [[ -z ${TMEM_INSTALL_SHELL:-} && $TARGET_SHELL != zsh ]]; then TARGET_SHELL=bash; fi
+if [[ ${1:-} == --shell && $# == 2 ]]; then
+    TARGET_SHELL=$2
+elif (( $# != 0 )); then
+    printf 'Usage: %s [--shell bash|zsh]\n' "$0" >&2
+    exit 2
+fi
+case "$TARGET_SHELL" in
+    bash)
+        DEFAULT_RC=$HOME/.bashrc
+        [[ $(uname -s) == Darwin ]] && DEFAULT_RC=$HOME/.bash_profile
+        RCFILE=${TMEM_INSTALL_BASHRC:-$DEFAULT_RC}
+        ;;
+    zsh) RCFILE=${TMEM_INSTALL_ZSHRC:-${ZDOTDIR:-$HOME}/.zshrc} ;;
+    *) printf 'Supported shells: bash, zsh\n' >&2; exit 2 ;;
+esac
+SOURCE_STATE=$CONFIG_DIR/${TARGET_SHELL}rc-source-line
 APP_MARKER=$APP_DIR/.tmem-install
 FILE_MARKER='# tmem managed file'
 
@@ -62,14 +79,14 @@ launcher_owned=0
 integration_owned=0
 managed_file "$BIN_DIR/tmem-core" 'python3 -m tmem' && core_owned=1
 managed_file "$BIN_DIR/tmem" 'current-shell execution requires the Bash integration' && launcher_owned=1
-managed_file "$CONFIG_DIR/tmem.bash" '# tmem Bash integration' && integration_owned=1
+managed_file "$CONFIG_DIR/tmem.$TARGET_SHELL" '# tmem Bash integration' && integration_owned=1
 
 refuse_unknown_target "$APP_DIR/tmem" "$app_owned"
 refuse_unknown_target "$APP_MARKER" "$managed_install"
 refuse_unknown_target "$BIN_DIR/tmem-core" "$core_owned"
 refuse_unknown_target "$BIN_DIR/tmem" "$launcher_owned"
-refuse_unknown_target "$CONFIG_DIR/tmem.bash" "$integration_owned"
-if path_exists "$SOURCE_STATE" && ! grep -Fqx 'tmem managed bashrc source' "$SOURCE_STATE" 2>/dev/null; then
+refuse_unknown_target "$CONFIG_DIR/tmem.$TARGET_SHELL" "$integration_owned"
+if path_exists "$SOURCE_STATE" && ! grep -Fqx "tmem managed ${TARGET_SHELL}rc source" "$SOURCE_STATE" 2>/dev/null; then
     printf 'Refusing to overwrite non-tmem path: %s\n' "$SOURCE_STATE" >&2
     exit 1
 fi
@@ -84,13 +101,15 @@ if (( ! config_dir_existed )); then
 fi
 rm -rf "$APP_DIR/tmem"
 cp -R "$ROOT_DIR/src/tmem" "$APP_DIR/tmem"
+mkdir -p "$APP_DIR/tmem/shell"
+cp "$ROOT_DIR"/shell/tmem.* "$APP_DIR/tmem/shell/"
 printf 'tmem managed installation\n' > "$APP_MARKER"
 {
     printf '%s\n' "$FILE_MARKER"
     printf 'if [[ -z ${TMEM_CORE:-} ]]; then TMEM_CORE=%q; fi\n' "$BIN_DIR/tmem-core"
-    cat "$ROOT_DIR/shell/tmem.bash"
-} > "$CONFIG_DIR/tmem.bash"
-chmod 600 "$CONFIG_DIR/tmem.bash"
+    cat "$ROOT_DIR/shell/tmem.$TARGET_SHELL"
+} > "$CONFIG_DIR/tmem.$TARGET_SHELL"
+chmod 600 "$CONFIG_DIR/tmem.$TARGET_SHELL"
 if [[ ! -f $CONFIG_DIR/config.json ]]; then
     cat > "$CONFIG_DIR/config.json" <<'CONFIG'
 {
@@ -110,7 +129,7 @@ fi
     printf 'APP_DIR=%q\n' "$APP_DIR"
     printf 'CONFIG_DIR=%q\n' "$CONFIG_DIR"
     cat <<'LAUNCHER'
-exec env PYTHONPATH="$APP_DIR" TMEM_CONFIG_DIR="${TMEM_CONFIG_DIR:-$CONFIG_DIR}" python3 -m tmem "$@"
+exec env PYTHONUTF8=1 PYTHONPATH="$APP_DIR" TMEM_CONFIG_DIR="${TMEM_CONFIG_DIR:-$CONFIG_DIR}" python3 -m tmem "$@"
 LAUNCHER
 } > "$BIN_DIR/tmem-core"
 chmod 755 "$BIN_DIR/tmem-core"
@@ -121,17 +140,17 @@ chmod 755 "$BIN_DIR/tmem-core"
     printf '#!/usr/bin/env bash\n'
     printf '%s\n' "$FILE_MARKER"
     printf 'CORE=%q\n' "$BIN_DIR/tmem-core"
-    printf 'INTEGRATION=%q\n' "$CONFIG_DIR/tmem.bash"
+    printf 'INTEGRATION=%q\n' "$CONFIG_DIR/tmem.$TARGET_SHELL"
     cat <<'LAUNCHER'
 case "${1-}" in
     ""|run)
-        printf 'tmem: current-shell execution requires the Bash integration.\n' >&2
+        printf 'tmem: current-shell execution requires the shell integration.\n' >&2
         printf 'Load it with: source %q\n' "$INTEGRATION" >&2
         exit 2
         ;;
     *)
         if "$CORE" memory-exists "$1" >/dev/null 2>&1; then
-            printf 'tmem: current-shell execution requires the Bash integration.\n' >&2
+            printf 'tmem: current-shell execution requires the shell integration.\n' >&2
             printf 'Load it with: source %q\n' "$INTEGRATION" >&2
             exit 2
         fi
@@ -143,33 +162,38 @@ LAUNCHER
 chmod 755 "$BIN_DIR/tmem"
 
 if [[ $CONFIG_DIR == "$HOME/.config/tmem" ]]; then
-    SOURCE_LINE='[[ -f "$HOME/.config/tmem/tmem.bash" ]] && source "$HOME/.config/tmem/tmem.bash"'
+    SOURCE_LINE='[[ -f "$HOME/.config/tmem/tmem.'"$TARGET_SHELL"'" ]] && source "$HOME/.config/tmem/tmem.'"$TARGET_SHELL"'"'
 else
-    printf -v integration_path '%q' "$CONFIG_DIR/tmem.bash"
+    printf -v integration_path '%q' "$CONFIG_DIR/tmem.$TARGET_SHELL"
     SOURCE_LINE="[[ -f $integration_path ]] && source $integration_path"
 fi
-if [[ ! -f $BASHRC ]]; then
-    touch "$BASHRC"
+if [[ ! -f $RCFILE ]]; then
+    mkdir -p "$(dirname "$RCFILE")"
+    touch "$RCFILE"
 fi
-if ! grep -Fqx "$SOURCE_LINE" "$BASHRC"; then
+if ! grep -Fqx "$SOURCE_LINE" "$RCFILE"; then
     {
         printf '\n# tmem terminal command memory\n'
         printf '%s\n' "$SOURCE_LINE"
-    } >> "$BASHRC"
-    printf 'tmem managed bashrc source\ncomment=1\n%s\n' "$SOURCE_LINE" > "$SOURCE_STATE"
+    } >> "$RCFILE"
+    printf 'tmem managed %src source\ncomment=1\n%s\n' "$TARGET_SHELL" "$SOURCE_LINE" > "$SOURCE_STATE"
 elif (( previous_install )) && [[ ! -f $SOURCE_STATE ]]; then
     # A previous tmem release added the same line but did not track ownership.
-    printf 'tmem managed bashrc source\ncomment=0\n%s\n' "$SOURCE_LINE" > "$SOURCE_STATE"
+    printf 'tmem managed %src source\ncomment=0\n%s\n' "$TARGET_SHELL" "$SOURCE_LINE" > "$SOURCE_STATE"
 fi
 chmod 600 "$APP_MARKER"
 [[ -f $SOURCE_STATE ]] && chmod 600 "$SOURCE_STATE"
 
 printf 'Installed tmem.\n'
 printf 'Load it in this shell with:\n\n'
-printf '  source %q\n\n' "$CONFIG_DIR/tmem.bash"
+printf '  source %q\n\n' "$CONFIG_DIR/tmem.$TARGET_SHELL"
 if ! command -v fzf >/dev/null 2>&1; then
     printf 'The interactive UI also needs fzf:\n\n'
-    printf '  sudo apt install fzf\n\n'
+    if [[ $(uname -s) == Darwin ]]; then
+        printf '  brew install fzf\n\n'
+    else
+        printf '  sudo apt install fzf\n\n'
+    fi
 fi
 if [[ :$PATH: != *":$BIN_DIR:"* ]]; then
     printf 'Add %s to PATH if your shell does not already do so.\n' "$BIN_DIR"

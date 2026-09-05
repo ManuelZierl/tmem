@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tmem.cli import main
-from tmem.db import TmemDB
+from tmem.db import TmemDB, normalize_scope_cwd
 
 
 class CliTests(unittest.TestCase):
@@ -32,8 +32,8 @@ class CliTests(unittest.TestCase):
 
     def test_noninteractive_fuzzy_search(self) -> None:
         with TmemDB(self.db_path) as db:
-            db.record_history("docker compose logs", "/project", 0, 1, 2, "h", "s")
-            db.record_history("git status", "/project", 0, 3, 4, "h", "s")
+            db.record_history("docker compose logs", normalize_scope_cwd(str(Path("/project").resolve())), 0, 1, 2, "h", "s")
+            db.record_history("git status", normalize_scope_cwd(str(Path("/project").resolve())), 0, 3, 4, "h", "s")
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             status = main(["search", "dcker"])
@@ -91,17 +91,17 @@ class CliTests(unittest.TestCase):
         self.assertEqual(script, "echo a b")
 
     def test_directory_scoped_memory_resolution(self) -> None:
-        with patch("tmem.cli.current_scope_cwd", return_value="/projects/a") as cwd:
+        with patch("tmem.cli.current_scope_cwd", return_value=normalize_scope_cwd(str(Path("/projects/a").resolve()))) as cwd:
             self.assertEqual(main(["save", "watch", "--", "echo", "global"]), 0)
             self.assertEqual(
                 main(["save", "--here", "watch", "--", "echo", "local-a"]), 0
             )
-            cwd.return_value = "/projects/b"
+            cwd.return_value = normalize_scope_cwd(str(Path("/projects/b").resolve()))
             self.assertEqual(
                 main(["save", "--here", "watch", "--", "echo", "local-b"]), 0
             )
 
-            cwd.return_value = "/projects/a"
+            cwd.return_value = normalize_scope_cwd(str(Path("/projects/a").resolve()))
             local_output = io.StringIO()
             with contextlib.redirect_stdout(local_output):
                 self.assertEqual(main(["shell-run", "watch"]), 0)
@@ -114,7 +114,7 @@ class CliTests(unittest.TestCase):
             global_script = base64.b64decode(global_output.getvalue().split("\t")[1]).decode()
             self.assertEqual(global_script, "echo global")
 
-            cwd.return_value = "/projects/other"
+            cwd.return_value = normalize_scope_cwd(str(Path("/projects/other").resolve()))
             fallback_output = io.StringIO()
             with contextlib.redirect_stdout(fallback_output):
                 self.assertEqual(main(["shell-run", "watch"]), 0)
@@ -126,16 +126,16 @@ class CliTests(unittest.TestCase):
             self.assertEqual(main(["list"]), 0)
         self.assertEqual(output.getvalue().count("watch"), 3)
         self.assertIn("scope=global", output.getvalue())
-        self.assertIn("scope=/projects/a", output.getvalue())
+        self.assertIn("scope=" + normalize_scope_cwd(str(Path("/projects/a").resolve())), output.getvalue())
 
     def test_directory_scoped_group(self) -> None:
-        with patch("tmem.cli.current_scope_cwd", return_value="/project"):
+        with patch("tmem.cli.current_scope_cwd", return_value=normalize_scope_cwd(str(Path("/project").resolve()))):
             self.assertEqual(
                 main(["group", "--here", "release", "--", "echo one", ":::", "echo two"]),
                 0,
             )
         with TmemDB(self.db_path) as db:
-            memory = db.get_memory_in_scope("release", "/project")
+            memory = db.get_memory_in_scope("release", normalize_scope_cwd(str(Path("/project").resolve())))
         self.assertIsNotNone(memory)
         self.assertTrue(memory.is_group)
 
@@ -174,9 +174,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(entry.finished_at_ms, 0)
         self.assertEqual(entry.duration_ms, 0)
 
+    @unittest.skipIf(os.name == "nt", "Bash fake-fzf fixture; native coverage tracked in PORTABILITY.md")
     def test_shell_ui_emits_execution_protocol_from_fzf_selection(self) -> None:
         with TmemDB(self.db_path) as db:
-            db.record_history("echo from-ui", "/project", 0, 1, 2, "h", "s")
+            db.record_history("echo from-ui", normalize_scope_cwd(str(Path("/project").resolve())), 0, 1, 2, "h", "s")
         bin_dir = Path(self.tempdir.name) / "bin"
         bin_dir.mkdir()
         fzf = bin_dir / "fzf"
@@ -196,9 +197,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(script_encoded).decode(), "echo from-ui")
         self.assertEqual(base64.b64decode(display_encoded).decode(), "echo from-ui")
 
+    @unittest.skipIf(os.name == "nt", "Bash fake-fzf fixture; native coverage tracked in PORTABILITY.md")
     def test_right_arrow_opens_actions_and_run_is_selectable(self) -> None:
         with TmemDB(self.db_path) as db:
-            db.record_history("echo via-details", "/project", 0, 1, 2, "h", "s")
+            db.record_history("echo via-details", normalize_scope_cwd(str(Path("/project").resolve())), 0, 1, 2, "h", "s")
         bin_dir = Path(self.tempdir.name) / "right-bin"
         bin_dir.mkdir()
         counter = Path(self.tempdir.name) / "fzf-counter"
