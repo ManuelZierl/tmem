@@ -33,10 +33,15 @@ foreach ($line in @('tmem save should-not-run -- echo x', 'tmem run state; Write
 tmem group grouped -- '$tmemBefore = "yes"' ::: '& $env:TMEM_TEST_PYTHON -c "raise SystemExit(7)"' ::: '$tmemAfter = "no"'
 $groupExpansion = _tmem_expand_line 'tmem run grouped'
 Assert ($null -ne $groupExpansion.Plan) 'group expansion returned no plan'
-. ([scriptblock]::Create($groupExpansion.Plan.Script))
+# Read status in the same statement list as the replacement. Checking $? after
+# `. ([scriptblock]::Create(...))` measures that extra test-only invocation, not
+# the script PSReadLine inserts at the prompt. Keep both status assertions.
+$statusProbe = @'
 $interactiveSucceeded = $?
 $interactiveCode = $LASTEXITCODE
-Assert (!$interactiveSucceeded -and $interactiveCode -eq 7) 'interactive replacement lost native failure status'
+'@
+. ([scriptblock]::Create($groupExpansion.Plan.Script + "`n" + $statusProbe))
+Assert (!$interactiveSucceeded -and $interactiveCode -eq 7) "interactive replacement lost native failure status: success=$interactiveSucceeded, code=$interactiveCode"
 Assert ($tmemBefore -eq 'yes') 'group lost caller scope'
 Assert (!(Get-Variable tmemAfter -ErrorAction Ignore)) 'group continued after error'
 
