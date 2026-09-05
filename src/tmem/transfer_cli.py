@@ -192,6 +192,25 @@ def _export(argv: Sequence[str]) -> int:
     return 0
 
 
+def _replace_memory(db: TmemDB, existing: Memory, definition: dict[str, Any]) -> None:
+    # Import replaces only the reusable definition. Local usage counters and
+    # remembered parameter values remain local activity and are preserved.
+    db.update_memory(
+        existing.id,
+        name=definition["name"],
+        description=definition["description"],
+        stop_on_error=definition["stop_on_error"],
+        steps=definition["commands"],
+        defaults=definition["defaults"],
+        scope_cwd=definition["scope_cwd"],
+    )
+    with db.connection:
+        db.connection.execute(
+            "UPDATE memories SET shell = ? WHERE id = ?",
+            (definition["shell"], existing.id),
+        )
+
+
 def _import(argv: Sequence[str]) -> int:
     args = _import_parser().parse_args(argv)
     document = _read_document(args.path)
@@ -213,16 +232,16 @@ def _import(argv: Sequence[str]) -> int:
             )
             raise ValueError(f"Import conflicts with existing memories: {names}")
 
-        conflict_ids = {existing.id for _, existing in conflicts}
         for definition in definitions:
             existing = db.get_memory_in_scope(definition["name"], definition["scope_cwd"])
             if existing is not None:
                 if args.on_conflict == "skip":
                     skipped += 1
                     continue
-                if existing.id in conflict_ids:
-                    db.delete_memory(existing.id)
-                    replaced += 1
+                _replace_memory(db, existing, definition)
+                imported += 1
+                replaced += 1
+                continue
             db.create_memory(
                 definition["name"],
                 definition["commands"],
