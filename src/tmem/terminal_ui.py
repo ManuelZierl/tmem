@@ -142,6 +142,7 @@ def run_fzf(
             command,
             input=input_text,
             text=True,
+            encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=None,
             check=False,
