@@ -8,7 +8,6 @@ $env:TMEM_SESSION_ID = "${env:COMPUTERNAME}:${PID}:$([guid]::NewGuid())"
 $global:_TmemPending = $null
 $global:_TmemMemoryId = $null
 $global:_TmemCoreStatus = 0
-$global:_TmemPwshPath = (Get-Process -Id $PID).Path
 
 function global:_tmem_core {
     param([string[]] $Arguments, [AllowNull()][string] $InputText = $null)
@@ -58,8 +57,11 @@ function global:_tmem_prepare {
 }
 
 function global:tmem {
-    # At the interactive prompt Enter replaces tmem with the actual script.
-    # In scripts, `. tmem run name` explicitly opts into the caller's scope.
+    # At the interactive prompt Enter replaces tmem with the actual script, so
+    # PowerShell itself owns the command's `$?` and `$LASTEXITCODE` semantics.
+    # In scripts, `. tmem run name` opts into caller scope. PowerShell function
+    # boundaries cannot transparently forward `$?`, but the native exit code is
+    # retained in `$LASTEXITCODE`.
     $tmemArguments = @($args)
     if ($tmemArguments.Count -gt 0) {
         switch ($tmemArguments[0]) {
@@ -87,14 +89,8 @@ function global:tmem {
         _tmem_core -Arguments @('note-run', $tmemExecution.MemoryId) | Out-Null
     }
     . ([scriptblock]::Create($tmemExecution.Script))
-    $executionSucceeded = $?
     $nativeCode = $global:LASTEXITCODE
-    if (!$executionSucceeded) {
-        # `$?` for a basic function cannot be assigned directly. Finish with a
-        # real native process carrying the same code; PowerShell then sets both
-        # `$?` and `$LASTEXITCODE` exactly as it would for the failed command.
-        & $global:_TmemPwshPath -NoLogo -NoProfile -NonInteractive -Command "exit $nativeCode"
-    }
+    $global:LASTEXITCODE = $nativeCode
 }
 
 function global:_tmem_expand_line {
