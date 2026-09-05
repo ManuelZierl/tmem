@@ -73,9 +73,9 @@ class PortabilityTests(unittest.TestCase):
         self.assertEqual(tokens[-1].value, "C:\\Users\\O'Brien\\a b.txt")
         self.assertNotIn('$env:HOME', [t.value for t in shell_tokens('echo $env:HOME', shell='powershell')])
 
-    def test_powershell_groups_dot_source_steps(self):
+    def test_powershell_groups_chain_statement_subexpressions(self):
         self.assertEqual(build_script(['$x = 1', '$x += 1'], shell='powershell'),
-                         '. {\n$x = 1\n} &&\n. {\n$x += 1\n}')
+                         '$(\n$x = 1\n) &&\n$(\n$x += 1\n)')
         self.assertEqual(build_script(['first', 'second'], False, shell='powershell'), 'first\nsecond')
 
     def test_mismatched_shell_history_and_memories_cannot_execute(self):
