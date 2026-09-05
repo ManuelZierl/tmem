@@ -1,36 +1,104 @@
-# Windows and macOS portability — draft implementation
+# Cross-platform behavior
 
-**This branch is not ready to merge and does not yet provide working native Windows parity.**
+`tmem` targets three interactive shell environments:
 
-The intended targets are Linux/Bash, macOS/zsh (with Bash retained), and Windows/PowerShell 7.3+. This is shell integration, not automatic translation of command syntax or installation of the programs used by saved commands.
+- Linux with Bash;
+- macOS with zsh, with Bash also supported;
+- Windows with PowerShell 7.3+ and PSReadLine.
 
-## Design
+This is shell integration, not command-language translation. A Bash/zsh command is not automatically converted to PowerShell, and a PowerShell command is not converted to Bash/zsh. Memories therefore retain the shell in which they were created and tmem refuses to execute a memory across the PowerShell ↔ Unix-shell language boundary.
 
-The shared Python/SQLite/fzf application resolves a selection into an execution protocol. A shell adapter performs execution in the existing shell, so directory, environment, variable and function changes can survive. PowerShell uses PSReadLine to replace a standalone `tmem` invocation with the selected script before normal prompt-scope execution. Noninteractive PowerShell callers use explicit `. tmem run <memory>` dot-sourcing. Existing custom Enter bindings are preserved; that mode also uses explicit execution rather than silently overriding a user binding.
+## Shared guarantees
 
-Memories retain their originating shell. Existing databases migrate to schema 3 with old memories tagged Bash, retaining IDs, steps, parameters and usage data. PowerShell and Unix-shell commands cannot execute across their language boundary. Bash and zsh share literal quoting, but shell-specific constructs are not translated and still need the original shell.
+Across the supported shells, tmem is designed to preserve the same core model:
 
-Parameter values receive shell-specific literal quoting, including PowerShell's Unicode quote delimiters. Placeholders inside quotes or escapes are rejected; write placeholders as whole unquoted argument tokens. The token picker is conservative, not a complete PowerShell parser.
+- history is recorded with shell identity;
+- saved memories and command groups execute in the current interactive shell rather than an isolated child shell;
+- directory, environment and other shell-state changes can therefore survive execution;
+- parameters are quoted according to the memory's command language;
+- groups stop after the first failing step by default;
+- the same SQLite data model and interactive tmem UI are used on every platform;
+- exported memory files are platform-independent JSON definitions and retain each memory's originating shell.
 
-## Implemented in this draft
+Existing databases migrate to schema 3. Pre-portability memories are tagged as Bash while retaining their IDs, steps, parameters and usage information.
 
-- zsh preexec/precmd/history hooks, execution adapter and pause/resume.
-- PowerShell adapter, strict execution-response validation and caller-scope strategy.
-- Shell-aware quoting, grouped execution, memory metadata and selection guards.
-- Windows data/config locations, clipboard/editor selection, zsh and PSReadLine history import.
-- `tmem-core init bash|zsh|powershell`; shell resources packaged from one canonical source.
-- Unix installers select Bash or zsh, respect custom paths and support both adapters side by side. Windows install/uninstall scripts use per-user locations and do not change execution policy or require administrator access. Uninstall preserves history and configuration.
-- Regression tests for quoting, language boundaries, history import, migration, installer coexistence and native shell scope/status. CI covers Ubuntu, macOS and Windows with Python 3.10, 3.12 and 3.14.
+## Linux / Bash
 
-The planned installer entry points are `./install.sh --shell zsh` on macOS and `./install.ps1` in PowerShell on Windows. **The presence of these installers is not a support claim: the runtime blockers below still apply.** The existing README describes the original Bash application, not a completed cross-platform release.
+Bash is the original integration and has the strongest interactive test coverage. It uses DEBUG/PROMPT_COMMAND hooks and Bash history to capture the complete command that actually ran.
 
-## Unresolved runtime and validation blockers
+GNU and BSD differences that matter to tmem are handled explicitly. In particular, timestamps do not require GNU `date +%N`, payload decoding works with GNU and BSD `base64`, and the adapter does not depend on modern Bash-only prompt expansion when running on macOS Bash 3.2.
 
-Publication of changes to `src/tmem/terminal_ui.py` and `shell/tmem.bash` was blocked by an OpenAI connector safety check. Those two files remain at their original versions. No alternate route was used to publish the blocked contents.
+## macOS / zsh
 
-1. The terminal module still imports Unix `readline` and assumes `/dev/tty`. Native Windows needs a compatible console input/output implementation with Unicode handling and strict separation between terminal UI and the stdout execution protocol. This currently prevents Windows startup.
-2. macOS/BSD date handling and Bash 3.2 multiline history still need implementation in the published Bash adapter. The BSD clock regression remains enabled and is expected to expose the missing behavior.
-3. The final published head needs passing native tests. Local working-copy results that included unpublished changes are not validation of this branch. Native shell or installer failures discovered by CI must also be fixed before support is claimed.
-4. Interactive acceptance still needs real Windows/macOS terminals: fzf selection/cancel, parameter input, Unicode, editor/clipboard, current-shell cwd/variables/functions, real history, exit status, and coexistence with user prompt/key hooks. POSIX pexpect tests are not Windows console tests; Windows noninteractive smoke tests alone do not cover the interactive PSReadLine path.
+zsh uses native `preexec`/`precmd` hooks and zsh history semantics. Saved commands execute in the current zsh so changes such as `cd`, variable assignments, sourced scripts and functions can affect the calling shell.
 
-Windows PowerShell 5.1, cmd.exe, PowerShell ISE, and command-language translation are outside the target scope. zsh prints the resolved command on a new line rather than guessing the dimensions of a custom prompt for in-place redraw.
+The zsh adapter intentionally does not attempt to redraw an arbitrary custom prompt in place. The resolved command is printed on a new line before execution. This avoids corrupting multi-line or plugin-managed prompts.
+
+macOS users who deliberately use Bash can install the Bash adapter instead; its Bash 3.2 compatibility paths are tested separately.
+
+## Windows / PowerShell
+
+Native Windows support targets PowerShell 7.3 or newer. Windows PowerShell 5.1, cmd.exe and PowerShell ISE are outside the support target.
+
+PowerShell uses PSReadLine for the primary interactive execution path. When Enter is pressed on a standalone `tmem ...` command, tmem resolves the selected memory and replaces the line editor buffer with the actual PowerShell script. PowerShell then executes that script normally at prompt scope. This is what allows variables, functions, `Set-Location`, environment changes and native `$?` / `$LASTEXITCODE` behavior to remain PowerShell-native.
+
+`tmem` preserves an existing custom Enter key binding rather than silently replacing it. In that case, or from scripts, explicit execution remains available:
+
+```powershell
+. tmem run <memory>
+```
+
+This fallback deliberately has one semantic difference. It preserves caller scope and `$LASTEXITCODE`, but PowerShell does not provide a transparent way for a normal function boundary to forward the automatic `$?` variable. Manufacturing a terminating error would make `$?` false but would change normal native-command control flow, so tmem does not do that. For normal interactive PSReadLine use this limitation does not apply because the resolved script is executed directly rather than through the tmem function.
+
+PowerShell command groups use `$()` statement subexpressions as operands of `&&` chains. This keeps state changes in the current scope while preserving PowerShell 7's native success/failure semantics between group steps.
+
+Windows terminal I/O is UTF-8 explicitly, rather than inheriting the legacy Windows ANSI code page. Editors inherit the PowerShell console's stdin/stderr while stdout remains reserved for tmem's shell execution protocol.
+
+## Memory import and export
+
+The SQLite database is an implementation detail and should not be copied between platforms as the normal way to share memories. Use the versioned interchange format instead:
+
+```text
+tmem export > tmem-memories.json
+tmem export deploy logs > team-memories.json
+tmem import team-memories.json
+```
+
+`tmem export` without names exports every saved memory. A named export resolves names in the same current-directory-first manner as normal memory execution.
+
+The JSON format contains only the declarative memory definition:
+
+- name and description;
+- originating shell;
+- global or directory scope;
+- stop-on-error behavior;
+- command/group steps;
+- parameter defaults.
+
+It intentionally does **not** export command history, run counts, timestamps, or remembered parameter values. Those represent local usage/activity rather than the reusable memory definition.
+
+Directory scopes are absolute paths and therefore frequently machine-specific. Import provides explicit remapping:
+
+```text
+tmem import memories.json --scope preserve
+tmem import memories.json --scope global
+tmem import memories.json --scope here
+```
+
+`preserve` is the default and is appropriate for backups or machines with the same layout. `global` is usually best when sharing memories across operating systems. `here` binds every imported memory to the current directory on the receiving machine.
+
+Conflicts fail closed by default. The caller must choose an alternative policy explicitly:
+
+```text
+tmem import memories.json --on-conflict error
+tmem import memories.json --on-conflict skip
+tmem import memories.json --on-conflict replace
+```
+
+The interchange document contains a format identifier and version number. Import rejects unknown versions rather than guessing, so the format can evolve without silently corrupting memory definitions.
+
+## Installation and platform validation
+
+Unix installation supports selecting Bash or zsh and can keep both adapters installed side by side. Windows installation is per-user and does not require administrator access or change PowerShell execution policy. Uninstall preserves user history/configuration and removes only tmem-owned integration files.
+
+CI covers Ubuntu, macOS and Windows with Python 3.10, 3.12 and 3.14 plus package builds. Native CI is necessary but not equivalent to a real interactive terminal. Before a cross-platform release, acceptance should still exercise real Windows Terminal and macOS terminals for fzf selection/cancel, parameter prompts, Unicode, editor/clipboard behavior, history, current-shell state, failure status and coexistence with user prompt/key customizations.
